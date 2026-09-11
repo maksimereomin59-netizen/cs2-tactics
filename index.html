@@ -8,45 +8,48 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="assets/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="assets/icon.svg">
-  <link rel="preload" as="image" href="assets/maps/mirage.png?v=6">
-  <link rel="preload" as="image" href="assets/maps/ancient.png?v=6">
-  <link rel="preload" as="image" href="assets/maps/dust2.png?v=6">
-  <link rel="stylesheet" href="styles.css?v=6">
+  <link rel="preload" as="image" href="assets/maps/mirage.png?v=7">
+  <link rel="preload" as="image" href="assets/maps/ancient.png?v=7">
+  <link rel="preload" as="image" href="assets/maps/dust2.png?v=7">
+  <link rel="stylesheet" href="styles.css?v=7">
 </head>
 <body>
-  <header class="top">
+  <header class="top" id="topbar">
     <a class="logo" href="#/" aria-label="На главную">
       <span class="logo-mark">CS2</span>
-      <span class="logo-name">Плейбук команды</span>
+      <span class="logo-name" id="teamTitle">Плейбук команды</span>
     </a>
-    <div class="top-actions">
-      <a class="top-link" href="#/bomb" title="Таймер установленной бомбы">Бомба · 40 сек</a>
-      <button id="editBtn" class="captain-btn" type="button">Режим капитана</button>
+    <div class="top-actions" id="topActions" hidden>
+      <button id="bombBtn" class="bomb-btn" type="button" title="Запустить таймер бомбы">Бомба 40</button>
+      <button id="editBtn" class="captain-btn" type="button">Капитан</button>
+    </div>
+    <div class="bombbar" id="bombBar" hidden>
+      <span class="bomb-time" id="bombTime">00:40</span>
+      <button class="bomb-ctl" id="bombToggle" type="button">Стоп</button>
+      <button class="bomb-ctl ghost" id="bombHide" type="button">Скрыть</button>
     </div>
   </header>
 
   <aside id="editPanel" class="editpanel" hidden>
-    <div class="editpanel-inner">
-      <div class="captain-state"><span class="status-dot"></span><b>Редактирование включено</b><span>Все изменения сохраняются автоматически</span></div>
-      <div class="panel-actions">
-        <button class="panel-btn" id="expBtn" type="button">Экспорт</button>
-        <button class="panel-btn" id="impBtn" type="button">Импорт</button>
-        <button class="panel-btn" id="passBtn" type="button">Сменить пароль</button>
-        <button class="panel-btn danger" id="rstBtn" type="button">Сбросить</button>
-      </div>
-    </div>
+    <div class="editpanel-inner" id="editPanelInner"></div>
   </aside>
 
   <main id="view"><div class="startup"><span class="startup-dot"></span>Загрузка плейбука…</div></main>
 
+  <nav class="bottomnav" id="bottomNav" hidden>
+    <a class="bnav-btn" href="#/me" data-nav="me">Мои задачи</a>
+    <a class="bnav-btn" href="#/maps" data-nav="maps">Карты</a>
+    <a class="bnav-btn" href="#/team" data-nav="team">Команда</a>
+  </nav>
+
   <footer class="foot">
-    <span>CS2 Плейбук команды</span>
-    <span>Изменения хранятся на этом устройстве</span>
+    <span id="footTeam">CS2 Плейбук команды</span>
+    <span>Данные хранятся на этом устройстве</span>
   </footer>
 
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 
-  <script src="data.js?v=6"></script>
-  <script src="app.js?v=6"></script>
+  <script src="data.js?v=7"></script>
+  <script src="app.js?v=7"></script>
 </body>
 </html>
