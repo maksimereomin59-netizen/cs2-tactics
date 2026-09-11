@@ -12,6 +12,6 @@
    откажется его использовать.
    Пока значения — заглушки, приложение работает локально на устройстве. */
 window.SUPABASE_CONFIG = {
-  url: "https://xxxx.supabase.co",
-  anonKey: "PASTE_ANON_KEY_HERE"
+  url: "https://emhplcinxtzyantctsgr.supabase.co",
+  anonKey: "sb_secret_UT_UUmFyf6dT1LSofRDeBQ_Ee6-tQQ6"
 };
