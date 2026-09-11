@@ -4,7 +4,7 @@
    или здесь, в этом файле. Координаты x/y — в % от схемы карты.
    ============================================================ */
 window.TACTICS_BASE = {
-  version: 3,
+  version: 4,
   meta: {
     title: "Плейбук команды",
     subtitle: "CS2 · турнир · кто куда идёт и что кидает",
@@ -96,6 +96,7 @@ window.TACTICS_BASE = {
   maps: {
     mirage: {
       name: "Mirage",
+      image: "assets/maps/mirage.png",
       zones: [
         { id: "tspawn",  name: "T-спаун",      x: 86, y: 50, w: 20, h: 16, kind: "tspawn", desc: "Старт атаки. Здесь капитан говорит план на фризауте." },
         { id: "tramp",   name: "T-рампа",      x: 76, y: 66, w: 14, h: 12, kind: "route",  desc: "Главный вход на A со стороны T. Отсюда же смоки на CT и джангл." },
@@ -125,6 +126,8 @@ window.TACTICS_BASE = {
       ],
       sides: {
         T: {
+          markerStyle: "number",
+          drawings: [],
           plan: [
             "Открытие: AWP + саппорт на миде (контроль), энтри на T-рампе, люркер в аппартах",
             "Контроль мида открыт → давим A через коннектор + джангл или B через кэтволк",
@@ -167,6 +170,8 @@ window.TACTICS_BASE = {
           ],
         },
         CT: {
+          markerStyle: "number",
+          drawings: [],
           plan: [
             "Дефолт: 2 на A (сайт + палас), 1 мид (коннектор), 1 на B, 1 флекс (CT/кухня)",
             "Инфа T на рампе → помощь на A с паласа и CT-ступеней, флекс идёт к кухне",
@@ -202,23 +207,101 @@ window.TACTICS_BASE = {
       },
     },
 
+    ancient: {
+      name: "Ancient",
+      image: "assets/maps/ancient.png",
+      zones: [
+        { id: "tspawn",  name: "T-спаун",   x: 49, y: 89, w: 13, h: 10, kind: "tspawn", desc: "Старт атаки. Отсюда расходятся на A-main, мид и B-рамп." },
+        { id: "ctspawn", name: "CT-спаун",  x: 51, y: 16, w: 13, h: 10, kind: "ctspawn", desc: "Старт защиты и центр быстрых ротаций между точками." },
+        { id: "asite",   name: "A-сайт",    x: 30, y: 27, w: 12, h: 9, kind: "siteA", desc: "Точка A. Заходы через A-main и donut." },
+        { id: "bsite",   name: "B-сайт",    x: 75, y: 42, w: 12, h: 9, kind: "siteB", desc: "Точка B. Заходы через ramp и cave." },
+        { id: "amain",   name: "A-main",    x: 25, y: 43, w: 10, h: 9, kind: "route", desc: "Основной коридор атаки к A. Проверяй ближние углы до выхода." },
+        { id: "donut",   name: "Donut",     x: 39, y: 34, w: 9, h: 9, kind: "route", desc: "Переход из мида на A — ключ к сплиту точки." },
+        { id: "mid",     name: "Мид",       x: 49, y: 45, w: 13, h: 11, kind: "route", desc: "Центр карты. Контроль мида открывает donut и быстрый B-сплит." },
+        { id: "red",     name: "Red room",  x: 43, y: 57, w: 9, h: 8, kind: "route", desc: "Подход T к миду, важная зона раннего контроля." },
+        { id: "elbow",   name: "Elbow",     x: 39, y: 67, w: 10, h: 8, kind: "route", desc: "Связка T-спауна и центральной части карты." },
+        { id: "blane",   name: "B-lane",    x: 61, y: 65, w: 11, h: 9, kind: "route", desc: "Длинный подход к B и cave. Опасен без флешек." },
+        { id: "ramp",    name: "B-ramp",    x: 82, y: 52, w: 11, h: 9, kind: "route", desc: "Главный выход атаки на B." },
+        { id: "cave",    name: "Cave",      x: 68, y: 51, w: 9, h: 9, kind: "route", desc: "Ближняя позиция у B. Молик обязателен перед выходом." },
+        { id: "temple",  name: "Temple",    x: 61, y: 31, w: 10, h: 9, kind: "route", desc: "Ротация CT к B и сильная позиция ретейка." },
+        { id: "house",   name: "House",     x: 39, y: 24, w: 9, h: 8, kind: "route", desc: "Защитная позиция рядом с A и donut." },
+      ],
+      links: [
+        ["tspawn", "elbow"], ["elbow", "red"], ["red", "mid"], ["mid", "donut"],
+        ["donut", "asite"], ["tspawn", "amain"], ["amain", "asite"], ["asite", "house"],
+        ["house", "ctspawn"], ["ctspawn", "temple"], ["temple", "bsite"], ["bsite", "cave"],
+        ["cave", "blane"], ["blane", "tspawn"], ["bsite", "ramp"], ["ramp", "blane"], ["mid", "temple"],
+      ],
+      sides: {
+        T: {
+          markerStyle: "number",
+          drawings: [],
+          plan: [
+            "Старт: двое забирают мид, энтри готовит A-main, пара контролирует B-lane",
+            "Есть мид → сплит A через donut + A-main или быстрый выход к temple на B",
+            "Выход A: смок CT, молик ближней позиции, синхрон A-main и donut",
+            "Выход B: молик cave, смок temple, две флешки над сайтом",
+            "После плента не искать фраги: занять два перекрёстных угла и играть бомбу",
+          ],
+          defaults: [
+            { player: "p1", zone: "mid",   note: "Мид: собираешь инфу и выбираешь направление сплита" },
+            { player: "p2", zone: "red",   note: "Ранний AWP-пик мида, после выстрела меняешь угол" },
+            { player: "p3", zone: "amain", note: "A-main: первый выход только после утилити" },
+            { player: "p4", zone: "blane", note: "B-lane: готовишь смок temple и молик cave" },
+            { player: "p5", zone: "elbow", note: "Флекс между мидом и B, следишь за агрессией CT" },
+          ],
+          nades: [
+            { id: "a1", type: "smoke", name: "Смок CT на A", by: "p4", from: "amain", to: "ctspawn", steps: ["Встань в A-main у безопасной стены", "Дай смок до контакта энтри с сайтом"], note: "Отрезает быструю помощь CT на A" },
+            { id: "a2", type: "flash", name: "Флеш над A", by: "p3", from: "amain", to: "asite", steps: ["Флеш высоко над выходом A-main", "Энтри выходит сразу за вспышкой"], note: "Ослепляет позиции сайта и house" },
+            { id: "a3", type: "molly", name: "Молик cave", by: "p4", from: "blane", to: "cave", steps: ["Подойди по B-lane до безопасной линии", "Молик в cave перед открытием рампы"], note: "Выкуривает ближнего защитника B" },
+            { id: "a4", type: "smoke", name: "Смок temple", by: "p5", from: "ramp", to: "temple", steps: ["С B-ramp прижмись к правой стене", "Смок в проход temple до выхода команды"], note: "Режет ретейк и дальний угол CT" },
+          ],
+        },
+        CT: {
+          markerStyle: "number",
+          drawings: [],
+          plan: [
+            "Дефолт: два A, один мид, один B, один флекс между temple и CT",
+            "Мид держим с возможностью отхода — не отдаём первый фраг без размена",
+            "Шум A-main: якорь остаётся, флекс приходит через CT, мид страхует donut",
+            "Шум B-lane: B отходит на сайт, флекс в temple, мид контролирует сплит",
+            "Ретейк только вместе: первая флеш, затем одновременный контакт с двух направлений",
+          ],
+          defaults: [
+            { player: "p1", zone: "asite",  note: "A-сайт: держишь A-main, командуешь помощью" },
+            { player: "p2", zone: "mid",    note: "AWP мид: один выстрел и отход к CT" },
+            { player: "p3", zone: "donut", note: "Donut: контроль сплита на A и помощь миду" },
+            { player: "p4", zone: "bsite",  note: "B-сайт: не отдаёшься до прихода флекса" },
+            { player: "p5", zone: "temple", note: "Флекс temple/CT: ротация по первой точной инфе" },
+          ],
+          nades: [
+            { id: "a5", type: "molly", name: "Молик A-main", by: "p1", from: "asite", to: "amain", steps: ["Кидай с укрытия A-сайта", "После молика смени позицию"], note: "Останавливает быстрый выход A" },
+            { id: "a6", type: "flash", name: "Флеш в мид", by: "p3", from: "donut", to: "mid", steps: ["Флеш из donut по команде мид-игрока", "Не пикай до подтверждения"], note: "Даёт безопасный повторный контроль мида" },
+            { id: "a7", type: "molly", name: "Молик cave", by: "p4", from: "bsite", to: "cave", steps: ["С B-сайта кинь молик в cave", "Отойди под флеш флекса"], note: "Ломает быстрый B-выход" },
+            { id: "a8", type: "flash", name: "Флеш ретейка B", by: "p5", from: "temple", to: "bsite", steps: ["Флеш из temple над сайтом", "Заход вдвоём после взрыва"], note: "Синхронизирует ретейк B" },
+          ],
+        },
+      },
+    },
+
     dust2: {
       name: "Dust 2",
+      image: "assets/maps/dust2.png",
       zones: [
-        { id: "tspawn",   name: "T-спаун",     x: 72, y: 86, w: 22, h: 16, kind: "tspawn", desc: "Старт атаки. Три дороги: лонг, мид, туннели." },
-        { id: "longdoors",name: "Лонг-двери",  x: 80, y: 70, w: 12, h: 10, kind: "route",  desc: "Двери на A-лонг. Дуэль AWP и смоки под выход." },
-        { id: "along",    name: "A-лонг",       x: 85, y: 52, w: 10, h: 18, kind: "route",  desc: "Длинный коридор на A. Держи у стены, не по центру." },
-        { id: "pit",      name: "Яма (пит)",    x: 79, y: 58, w: 8,  h: 8,  kind: "route",  desc: "Углубление на лонге: позиция CT-лонгера и укрытие T." },
-        { id: "blue",     name: "Синие коробки",x: 81, y: 40, w: 10, h: 8,  kind: "route",  desc: "Коробки у входа на A с лонга. Plant-зона и укрытие." },
-        { id: "asite",    name: "A-сайт",       x: 70, y: 22, w: 16, h: 14, kind: "siteA",  desc: "Точка A. Прострелы с лонга, катока и CT — plant за коробками." },
-        { id: "catwalk",  name: "Кэток (A-short)", x: 58, y: 30, w: 12, h: 10, kind: "route", desc: "Мостик CT-спаун → A. Ротация CT и второй заход T." },
-        { id: "ctspawn",  name: "CT-спаун",     x: 48, y: 40, w: 14, h: 12, kind: "ctspawn",desc: "Старт защиты: разбежка на A, мид и B." },
-        { id: "mid",      name: "Мид",          x: 50, y: 56, w: 12, h: 16, kind: "route",  desc: "Центр: дуэль у дверей, путь на B и резка ротаций." },
-        { id: "middoors", name: "Мид-двери",    x: 52, y: 72, w: 10, h: 8,  kind: "route",  desc: "Двери из T на мид. Флешки и смоки под дуэль." },
-        { id: "bdoors",   name: "B-двери",      x: 38, y: 32, w: 10, h: 10, kind: "route",  desc: "Двери мид → B. Вход на B и ретейк CT." },
-        { id: "bsite",    name: "B-сайт",       x: 24, y: 18, w: 16, h: 14, kind: "siteB",  desc: "Точка B. Заход с туннелей и дверей, plant на платформе/за коробкой." },
-        { id: "uptunnels",name: "Верх. туннели",x: 12, y: 28, w: 12, h: 12, kind: "route",  desc: "Выход туннелей на B. Флешки и молик под заход." },
-        { id: "lotunnels",name: "Ниж. туннели", x: 40, y: 78, w: 14, h: 12, kind: "route",  desc: "Туннели с T-спауна на B. Тихий путь, но узкий — не толпой." },
+        { id: "tspawn",   name: "T-спаун",     x: 39, y: 91, w: 22, h: 16, kind: "tspawn", desc: "Старт атаки. Три дороги: лонг, мид, туннели." },
+        { id: "longdoors",name: "Лонг-двери",  x: 11, y: 42, w: 12, h: 10, kind: "route",  desc: "Двери на A-лонг. Дуэль AWP и смоки под выход." },
+        { id: "along",    name: "A-лонг",       x: 12, y: 28, w: 10, h: 18, kind: "route",  desc: "Длинный коридор на A. Держи у стены, не по центру." },
+        { id: "pit",      name: "Яма (пит)",    x: 9, y: 18, w: 8,  h: 8,  kind: "route",  desc: "Углубление на лонге: позиция CT-лонгера и укрытие T." },
+        { id: "blue",     name: "Синие коробки",x: 20, y: 24, w: 10, h: 8,  kind: "route",  desc: "Коробки у входа на A с лонга. Plant-зона и укрытие." },
+        { id: "asite",    name: "A-сайт",       x: 21, y: 13, w: 16, h: 14, kind: "siteA",  desc: "Точка A. Прострелы с лонга, катока и CT — plant за коробками." },
+        { id: "catwalk",  name: "Кэток (A-short)", x: 37, y: 26, w: 12, h: 10, kind: "route", desc: "Мостик CT-спаун → A. Ротация CT и второй заход T." },
+        { id: "ctspawn",  name: "CT-спаун",     x: 60, y: 21, w: 14, h: 12, kind: "ctspawn",desc: "Старт защиты: разбежка на A, мид и B." },
+        { id: "mid",      name: "Мид",          x: 51, y: 47, w: 12, h: 16, kind: "route",  desc: "Центр: дуэль у дверей, путь на B и резка ротаций." },
+        { id: "middoors", name: "Мид-двери",    x: 48, y: 57, w: 10, h: 8,  kind: "route",  desc: "Двери из T на мид. Флешки и смоки под дуэль." },
+        { id: "bdoors",   name: "B-двери",      x: 68, y: 34, w: 10, h: 10, kind: "route",  desc: "Двери мид → B. Вход на B и ретейк CT." },
+        { id: "bsite",    name: "B-сайт",       x: 80, y: 18, w: 16, h: 14, kind: "siteB",  desc: "Точка B. Заход с туннелей и дверей, plant на платформе/за коробкой." },
+        { id: "uptunnels",name: "Верх. туннели",x: 90, y: 42, w: 12, h: 12, kind: "route",  desc: "Выход туннелей на B. Флешки и молик под заход." },
+        { id: "lotunnels",name: "Ниж. туннели", x: 75, y: 65, w: 14, h: 12, kind: "route",  desc: "Туннели с T-спауна на B. Тихий путь, но узкий — не толпой." },
       ],
       links: [
         ["tspawn", "longdoors"], ["longdoors", "along"], ["along", "pit"], ["along", "blue"],
@@ -228,6 +311,8 @@ window.TACTICS_BASE = {
       ],
       sides: {
         T: {
+          markerStyle: "number",
+          drawings: [],
           plan: [
             "Открытие: AWP-дуэль на лонг-дверях, двое на миде, туннели готовы к B",
             "Взяли лонг → жми A: смоки CT и кэтока, выход с лонга и синих",
@@ -264,6 +349,8 @@ window.TACTICS_BASE = {
           ],
         },
         CT: {
+          markerStyle: "number",
+          drawings: [],
           plan: [
             "Дефолт: 1 лонг (яма), 1 A (сайт), 1 мид, 1 B, 1 флекс (CT-спаун)",
             "Лонг-пуш: молик в двери + отход в яму/синие, помощь с A через 3 сек",

@@ -1,470 +1,1142 @@
-/* CS2 Team Playbook — приложение */
+/* CS2 Tactical Playbook */
 (function () {
   "use strict";
 
   const LS_KEY = "cs2-playbook-v1";
+  const LOCK_KEY = "cs2-captain-lock-v1";
   const BASE = window.TACTICS_BASE;
+  const COLORS = ["#e6a72e", "#ef5d5d", "#5da9ff", "#48cf8b", "#b984ff", "#f2f4f7"];
+  const NADE_ICON = { smoke: "●", molly: "◆", flash: "✦" };
+  const NADE_NAME = { smoke: "смоук", molly: "молик", flash: "флеш" };
 
-  /* ---------- состояние ---------- */
   let data = load();
   let editMode = false;
-  let ui = { map: null, side: "T", tab: "pos", player: null, nade: null, zone: null };
+  let svgSerial = 0;
+  let toastTimer = null;
+  let timerInt = null;
+  let timerLeft = 40;
+  let ui = {
+    map: null,
+    side: "T",
+    tab: "board",
+    player: null,
+    nade: null,
+    zone: null,
+    drawTool: "select",
+    drawColor: COLORS[0],
+    selected: null,
+  };
+
+  /* ---------- data ---------- */
+  function clone(value) {
+    return JSON.parse(JSON.stringify(value));
+  }
+
+  function normalizeData(value) {
+    const next = value && value.players && value.maps ? value : clone(BASE);
+    next.version = BASE.version;
+    next.meta = next.meta || clone(BASE.meta);
+    next.players = next.players || clone(BASE.players);
+    next.eco = next.eco || clone(BASE.eco);
+    Object.keys(BASE.maps).forEach((mapId) => {
+      if (!next.maps[mapId]) next.maps[mapId] = clone(BASE.maps[mapId]);
+      const map = next.maps[mapId];
+      map.image = BASE.maps[mapId].image;
+      map.zones = map.zones || clone(BASE.maps[mapId].zones);
+      map.links = map.links || clone(BASE.maps[mapId].links);
+      map.sides = map.sides || clone(BASE.maps[mapId].sides);
+      ["T", "CT"].forEach((side) => {
+        if (!map.sides[side]) map.sides[side] = clone(BASE.maps[mapId].sides[side]);
+        const sideData = map.sides[side];
+        if (!Array.isArray(sideData.drawings)) sideData.drawings = [];
+        if (!sideData.markerStyle) sideData.markerStyle = "number";
+        sideData.defaults = sideData.defaults || [];
+        sideData.nades = sideData.nades || [];
+        sideData.plan = sideData.plan || [];
+      });
+    });
+    const orderedMaps = {};
+    Object.keys(BASE.maps).forEach((mapId) => { orderedMaps[mapId] = next.maps[mapId]; });
+    Object.keys(next.maps).forEach((mapId) => { if (!orderedMaps[mapId]) orderedMaps[mapId] = next.maps[mapId]; });
+    next.maps = orderedMaps;
+    return next;
+  }
 
   function load() {
     try {
       const raw = localStorage.getItem(LS_KEY);
-      if (raw) {
-        const saved = JSON.parse(raw);
-        if (saved && saved.version === BASE.version) return saved;
-      }
-    } catch (e) {}
-    return JSON.parse(JSON.stringify(BASE));
+      if (raw) return normalizeData(JSON.parse(raw));
+    } catch (error) {}
+    return normalizeData(clone(BASE));
   }
+
   function save() {
-    try { localStorage.setItem(LS_KEY, JSON.stringify(data)); } catch (e) {}
+    try { localStorage.setItem(LS_KEY, JSON.stringify(data)); } catch (error) {}
   }
+
   function resetData() {
-    if (!confirm("Сбросить все правки к базовой версии?")) return;
+    if (!editMode) return;
+    if (!confirm("Сбросить все позиции, линии и тексты к базовой версии?")) return;
     localStorage.removeItem(LS_KEY);
-    data = JSON.parse(JSON.stringify(BASE));
+    data = normalizeData(clone(BASE));
+    ui.selected = null;
     render();
+    toast("Данные плейбука сброшены");
   }
 
-  /* ---------- утилиты ---------- */
-  const $ = (sel, root) => (root || document).querySelector(sel);
-  const $$ = (sel, root) => Array.from((root || document).querySelectorAll(sel));
-  const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-  const playerById = (id) => data.players.find((p) => p.id === id);
+  /* ---------- helpers ---------- */
+  const $ = (selector, root) => (root || document).querySelector(selector);
+  const $$ = (selector, root) => Array.from((root || document).querySelectorAll(selector));
+  const esc = (value) => String(value == null ? "" : value).replace(/[&<>"']/g, (char) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[char]));
+  const attr = esc;
+  const playerById = (id) => data.players.find((player) => player.id === id);
   const mapById = (id) => data.maps[id];
-  const zoneById = (m, id) => m.zones.find((z) => z.id === id);
-  const NADE_ICON = { smoke: "💨", molly: "🔥", flash: "⚡" };
-  const NADE_NAME = { smoke: "смоук", molly: "молик", flash: "флеш" };
+  const zoneById = (map, id) => map && map.zones.find((zone) => zone.id === id);
+  const clamp = (number, min, max) => Math.max(min, Math.min(max, number));
+  const safeColor = (color) => /^#[0-9a-f]{6}$/i.test(String(color || "")) ? color : COLORS[0];
+  const cleanId = (id) => String(id || "item").replace(/[^a-z0-9_-]/gi, "");
 
-  /* ---------- схема карты (SVG) ---------- */
-  function mapSVG(mapId, opts) {
-    opts = opts || {};
-    const m = mapById(mapId);
-    const showLabels = opts.labels !== false;
-    let s = '<svg class="map" viewBox="0 0 100 100" data-map="' + mapId + '" role="img" aria-label="' + esc(m.name) + '">';
-    s += '<defs><marker id="arr" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#ff5c5c"/></marker></defs>';
-    // связи
-    m.links.forEach((l) => {
-      const a = zoneById(m, l[0]), b = zoneById(m, l[1]);
-      if (!a || !b) return;
-      s += '<line x1="' + a.x + '" y1="' + a.y + '" x2="' + b.x + '" y2="' + b.y + '" class="lnk"/>';
-    });
-    // зоны
-    m.zones.forEach((z) => {
-      const cls = "zone z-" + (z.kind || "route") + (opts.highlightZone === z.id ? " z-hl" : "");
-      s += '<rect class="' + cls + '" x="' + (z.x - z.w / 2) + '" y="' + (z.y - z.h / 2) + '" width="' + z.w + '" height="' + z.h + '" rx="2.4" data-zone="' + z.id + '"/>';
-      if (showLabels) s += '<text class="zlab" x="' + z.x + '" y="' + (z.y + z.h / 2 + 3.4) + '" text-anchor="middle">' + esc(z.name) + "</text>";
-    });
-    // стрелки гранат
-    (opts.arrows || []).forEach((a) => {
-      s += '<line class="nade-arrow" x1="' + a.fx + '" y1="' + a.fy + '" x2="' + a.tx + '" y2="' + a.ty + '" marker-end="url(#arr)"/>';
-      s += '<circle class="nade-from" cx="' + a.fx + '" cy="' + a.fy + '" r="2.6"/>';
-      s += '<text class="nade-from-ic" x="' + a.fx + '" y="' + (a.fy + 1.15) + '" text-anchor="middle">' + (NADE_ICON[a.type] || "•") + "</text>";
-      s += '<g class="nade-to"><line x1="' + (a.tx - 2) + '" y1="' + (a.ty - 2) + '" x2="' + (a.tx + 2) + '" y2="' + (a.ty + 2) + '"/><line x1="' + (a.tx - 2) + '" y1="' + (a.ty + 2) + '" x2="' + (a.tx + 2) + '" y2="' + (a.ty - 2) + '"/></g>';
-    });
-    // маркеры игроков
-    (opts.markers || []).forEach((mk) => {
-      const p = playerById(mk.player);
-      if (!p) return;
-      const idx = data.players.indexOf(p);
-      s += '<g class="pmk' + (opts.dimOthers && ui.player && mk.player !== ui.player ? " dim" : "") + (opts.focus === mk.player ? " foc" : "") + '" data-player="' + mk.player + '" data-map="' + mapId + '" data-side="' + (opts.side || "") + '" transform="translate(' + mk.x + "," + mk.y + ')">';
-      s += '<circle r="3.6" fill="' + p.color + '"/>';
-      s += '<text y="1.35" text-anchor="middle">' + (idx + 1) + "</text>";
-      s += "</g>";
-    });
-    s += "</svg>";
-    return s;
+  function toast(message) {
+    const element = $("#toast");
+    if (!element) return;
+    clearTimeout(toastTimer);
+    element.textContent = message;
+    element.hidden = false;
+    toastTimer = setTimeout(() => { element.hidden = true; }, 2300);
   }
 
+  function bindMapImages() {
+    $$(".map-photo, .map-card-photo").forEach((image) => {
+      const showError = () => {
+        if (image.dataset.failed) return;
+        image.dataset.failed = "1";
+        image.classList.add("failed");
+        const holder = image.parentElement;
+        if (!holder || holder.querySelector(".map-load-error, .map-error")) return;
+        const message = document.createElement("div");
+        message.className = image.classList.contains("map-photo") ? "map-load-error" : "map-error";
+        message.textContent = "Изображение карты не загрузилось. Обновите страницу.";
+        holder.appendChild(message);
+      };
+      image.addEventListener("error", showError, { once: true });
+      if (image.complete && !image.naturalWidth) showError();
+    });
+  }
+
+  function setPath(path, value) {
+    const parts = path.split(".");
+    let target = data;
+    for (let index = 0; index < parts.length - 1; index++) target = target[parts[index]];
+    target[parts[parts.length - 1]] = value;
+  }
+
+  function closeModal() {
+    const modal = $("#modal");
+    if (modal) modal.remove();
+  }
+
+  /* ---------- radar and overlays ---------- */
   function markersFor(mapId, side) {
-    const sd = mapById(mapId).sides[side];
-    return (sd.defaults || []).map((d) => {
-      const z = zoneById(mapById(mapId), d.zone);
-      return { player: d.player, x: z.x + (d.dx || 0), y: z.y + (d.dy || 0), zone: d.zone, note: d.note };
+    const map = mapById(mapId);
+    const defaults = map.sides[side].defaults || [];
+    return defaults.map((position, index) => {
+      const zone = zoneById(map, position.zone) || { x: 50, y: 50 };
+      return {
+        player: position.player,
+        x: zone.x + (position.dx || 0),
+        y: zone.y + (position.dy || 0),
+        defaultIndex: index,
+      };
     });
   }
 
-  /* ---------- роутер ---------- */
+  function drawingsFor(mapId, side) {
+    const sideData = mapById(mapId).sides[side];
+    if (!Array.isArray(sideData.drawings)) sideData.drawings = [];
+    return sideData.drawings;
+  }
+
+  function renderDrawing(drawing, arrowId, selected) {
+    const color = safeColor(drawing.color);
+    const classes = "draw-item" + (selected ? " selected" : "");
+    const id = attr(drawing.id);
+
+    if (drawing.type === "arrow" || drawing.type === "line") {
+      const marker = drawing.type === "arrow" ? ' marker-end="url(#' + arrowId + ')"' : "";
+      const coords = ' x1="' + drawing.x1 + '" y1="' + drawing.y1 + '" x2="' + drawing.x2 + '" y2="' + drawing.y2 + '"';
+      return '<g class="' + classes + '" data-drawing-id="' + id + '" style="color:' + color + '">' +
+        '<line class="move-line hit"' + coords + '/>' +
+        '<line class="move-line visible" stroke="' + color + '"' + coords + marker + '/>' +
+        '<line class="selection-ring"' + coords + '/></g>';
+    }
+
+    if (drawing.type === "pen" && Array.isArray(drawing.points)) {
+      const points = drawing.points.map((point) => point[0] + "," + point[1]).join(" ");
+      return '<g class="' + classes + '" data-drawing-id="' + id + '" style="color:' + color + '">' +
+        '<polyline class="move-line hit" points="' + points + '"/>' +
+        '<polyline class="move-line visible" stroke="' + color + '" points="' + points + '"/>' +
+        '<polyline class="selection-ring" points="' + points + '"/></g>';
+    }
+
+    if (drawing.type === "number") {
+      const text = esc(String(drawing.text || "1").slice(0, 3));
+      return '<g class="' + classes + ' draw-marker" data-drawing-id="' + id + '" transform="translate(' + drawing.x + ',' + drawing.y + ')" style="color:' + color + '">' +
+        '<circle class="tactic-number-bg" r="3.25" stroke="' + color + '"/>' +
+        '<circle class="selection-ring" r="4.2"/>' +
+        '<text class="tactic-number-text" y=".15" fill="' + color + '">' + text + '</text></g>';
+    }
+
+    const label = String(drawing.text || "МЕТКА").slice(0, 24);
+    const width = clamp(label.length * 1.9 + 5, 12, 48);
+    return '<g class="' + classes + ' draw-marker" data-drawing-id="' + id + '" transform="translate(' + drawing.x + ',' + drawing.y + ')" style="color:' + color + '">' +
+      '<rect class="tactic-label-bg" x="' + (-width / 2) + '" y="-2.65" width="' + width + '" height="5.3" rx="1" stroke="' + color + '"/>' +
+      '<rect class="selection-ring" x="' + (-width / 2 - 1) + '" y="-3.65" width="' + (width + 2) + '" height="7.3" rx="1"/>' +
+      '<text class="tactic-label" y=".1" fill="' + color + '">' + esc(label) + '</text></g>';
+  }
+
+  function mapFrame(mapId, options) {
+    const map = mapById(mapId);
+    return '<div class="map-canvas" data-map-frame="' + attr(mapId) + '">' +
+      '<img class="map-photo" src="' + attr(map.image) + '?v=6" alt="Карта ' + attr(map.name) + '" draggable="false">' +
+      mapSVG(mapId, options) +
+      '</div>';
+  }
+
+  function mapSVG(mapId, options) {
+    const opts = options || {};
+    const map = mapById(mapId);
+    const serial = ++svgSerial;
+    const nadeArrowId = "nade-arrow-" + serial;
+    const drawings = opts.drawings || [];
+    const selected = opts.selected || null;
+    const arrowIds = {};
+
+    let defs = '<marker id="' + nadeArrowId + '" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#dd5a5a"/></marker>';
+    drawings.forEach((drawing, index) => {
+      if (drawing.type !== "arrow") return;
+      const markerId = "move-arrow-" + serial + "-" + cleanId(drawing.id) + "-" + index;
+      arrowIds[drawing.id] = markerId;
+      defs += '<marker id="' + markerId + '" viewBox="0 0 10 10" refX="8.2" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="' + safeColor(drawing.color) + '"/></marker>';
+    });
+
+    let svg = '<svg class="map tactical-map' + (opts.editor ? " editor-active" : "") + '" viewBox="0 0 100 100" data-map="' + attr(mapId) + '" data-side="' + attr(opts.side || "") + '" data-arrow-id="' + nadeArrowId + '" role="img" aria-label="Тактические пометки карты ' + attr(map.name) + '">';
+    svg += '<defs>' + defs + '</defs>';
+    svg += '<rect class="map-hit-area" width="100" height="100" fill="transparent"/>';
+
+    if (opts.zones) {
+      map.zones.forEach((zone) => {
+        const active = opts.highlightZone === zone.id ? " active" : "";
+        svg += '<rect class="call-zone' + active + '" data-zone="' + attr(zone.id) + '" x="' + (zone.x - zone.w / 2) + '" y="' + (zone.y - zone.h / 2) + '" width="' + zone.w + '" height="' + zone.h + '" rx="1"/>';
+        svg += '<text class="zlab" x="' + zone.x + '" y="' + (zone.y + zone.h / 2 + 2.7) + '">' + esc(zone.name) + '</text>';
+      });
+    }
+
+    (opts.arrows || []).forEach((arrow) => {
+      svg += '<line class="nade-arrow" x1="' + arrow.fx + '" y1="' + arrow.fy + '" x2="' + arrow.tx + '" y2="' + arrow.ty + '" marker-end="url(#' + nadeArrowId + ')"/>';
+      svg += '<circle class="nade-from" cx="' + arrow.fx + '" cy="' + arrow.fy + '" r="2.5"/>';
+      svg += '<text class="nade-from-ic" x="' + arrow.fx + '" y="' + (arrow.fy + 1.05) + '">' + (NADE_ICON[arrow.type] || "•") + '</text>';
+      svg += '<g class="nade-to"><line x1="' + (arrow.tx - 1.8) + '" y1="' + (arrow.ty - 1.8) + '" x2="' + (arrow.tx + 1.8) + '" y2="' + (arrow.ty + 1.8) + '"/><line x1="' + (arrow.tx - 1.8) + '" y1="' + (arrow.ty + 1.8) + '" x2="' + (arrow.tx + 1.8) + '" y2="' + (arrow.ty - 1.8) + '"/></g>';
+    });
+
+    drawings.forEach((drawing) => {
+      svg += renderDrawing(drawing, arrowIds[drawing.id], selected === drawing.id);
+    });
+
+    const labelStyle = opts.labelStyle || "number";
+    (opts.markers || []).forEach((marker) => {
+      const player = playerById(marker.player);
+      if (!player) return;
+      const playerIndex = data.players.indexOf(player);
+      const color = safeColor(player.color);
+      const classes = "pmk" + (opts.dimOthers && ui.player && marker.player !== ui.player ? " dim" : "") + (opts.focus === marker.player ? " foc" : "");
+      svg += '<g class="' + classes + '" data-player="' + attr(marker.player) + '" data-default-index="' + marker.defaultIndex + '" transform="translate(' + marker.x + ',' + marker.y + ')">';
+      if (labelStyle === "nick") {
+        const nick = String(player.nick || "?").slice(0, 18);
+        const width = clamp(nick.length * 1.75 + 5, 12, 36);
+        svg += '<rect class="player-tag" x="' + (-width / 2) + '" y="-2.7" width="' + width + '" height="5.4" rx="1" stroke="' + color + '"/>';
+        svg += '<text class="player-nick" y=".1" fill="' + color + '">' + esc(nick) + '</text>';
+      } else {
+        svg += '<circle r="3.25" stroke="' + color + '"/><text class="player-num" y=".1" fill="' + color + '">' + (playerIndex + 1) + '</text>';
+      }
+      svg += '</g>';
+    });
+
+    svg += '<rect class="map-vignette" x=".25" y=".25" width="99.5" height="99.5"/>';
+    svg += '</svg>';
+    return svg;
+  }
+
+  /* ---------- routing ---------- */
   function parseHash() {
-    const h = location.hash.replace(/^#\/?/, "");
-    const parts = h.split("/").filter(Boolean);
-    return parts;
+    return location.hash.replace(/^#\/?/, "").split("/").filter(Boolean);
   }
 
   function route() {
     const parts = parseHash();
-    ui.nade = null; ui.zone = null;
+    ui.nade = null;
+    ui.zone = null;
+    ui.selected = null;
+
     if (parts[0] === "map" && parts[1]) {
-      if (ui.map !== parts[1]) { ui.tab = "pos"; ui.side = "T"; }
+      if (ui.map !== parts[1]) {
+        ui.tab = "board";
+        ui.side = "T";
+      }
       ui.map = parts[1];
-      if (parts[2] === "CT" || parts[2] === "T") ui.side = parts[2];
+      ui.player = null;
+      if (parts[2] === "T" || parts[2] === "CT") ui.side = parts[2];
       renderMapPage();
     } else if (parts[0] === "player" && parts[1]) {
       ui.map = null;
       ui.player = parts[1];
       renderPlayerPage();
-    } else if (parts[0] === "timer") {
+    } else if (parts[0] === "bomb" || parts[0] === "timer") {
       ui.map = null;
-      renderTimerPage();
-    } else {
       ui.player = null;
+      renderBombPage();
+    } else {
       ui.map = null;
+      ui.player = null;
       renderHome();
     }
     window.scrollTo(0, 0);
   }
 
-  /* ---------- главная ---------- */
+  /* ---------- home ---------- */
   function renderHome() {
-    const v = $("#view");
-    let h = "";
-    h += '<section class="hero"><h1>' + esc(data.meta.title) + '</h1><p>' + esc(data.meta.subtitle) + "</p></section>";
+    const view = $("#view");
+    let html = '<section class="hero"><p class="eyebrow">Командный плейбук CS2</p><div class="hero-row"><div><h1 class="ed" data-path="meta.title">' + esc(data.meta.title) + '</h1><p class="ed" data-path="meta.subtitle">' + esc(data.meta.subtitle) + '</p></div></div>' +
+      '<div class="hero-meta"><span class="meta-chip">3 карты</span><span class="meta-chip">Планы T и CT</span><span class="meta-chip">Доступ капитана по паролю</span></div></section>';
 
-    h += '<section class="card"><h2>1 · Кто ты?</h2><p class="muted">Нажми на себя — увидишь свои позиции, задачи и гранаты.</p><div class="chips">';
-    data.players.forEach((p, i) => {
-      h += '<a class="chip" style="--pc:' + p.color + '" href="#/player/' + p.id + '"><span class="chip-n">' + (i + 1) + '</span><span class="chip-t"><b>' + esc(p.nick) + "</b><small>" + esc(p.role) + "</small></span></a>";
+    html += '<section class="section"><div class="section-head"><div><h2>1. Кто ты?</h2><p>Выбери себя, чтобы открыть позиции, задачи и гранаты.</p></div><span class="section-index">01</span></div><div class="roster">';
+    data.players.forEach((player, index) => {
+      html += '<a class="chip" style="--pc:' + safeColor(player.color) + '" href="#/player/' + attr(player.id) + '"><span class="chip-n">' + (index + 1) + '</span><span class="chip-t"><b>' + esc(player.nick) + '</b><small>' + esc(player.role) + '</small></span></a>';
     });
-    h += "</div></section>";
+    html += '</div></section>';
 
-    h += '<section class="card"><h2>2 · Карта</h2><div class="mapcards">';
-    Object.keys(data.maps).forEach((mid) => {
-      h += '<a class="mapcard" href="#/map/' + mid + '/T">' + mapSVG(mid, { labels: true, markers: [] }) + '<span class="mapcard-name">' + esc(data.maps[mid].name) + "</span></a>";
+    html += '<section class="section"><div class="section-head"><div><h2>2. Карты</h2><p>Открой карту и выбери сторону. Все пометки капитана будут поверх изображения.</p></div><span class="section-index">02</span></div><div class="mapcards">';
+    Object.keys(data.maps).forEach((mapId, index) => {
+      const map = data.maps[mapId];
+      html += '<a class="mapcard" href="#/map/' + mapId + '/T"><div class="mapcard-thumb"><img class="map-card-photo" src="' + attr(map.image) + '?v=6" alt="Карта ' + attr(map.name) + '" loading="eager" decoding="async"><span class="mapcard-code">Карта ' + (index + 1) + '</span></div><div class="mapcard-info"><span class="mapcard-name">' + esc(map.name) + '</span><span class="mapcard-open">Открыть →</span></div></a>';
     });
-    h += "</div><p class='muted'>На карте: позиции по сторонам (T/CT), гранаты со стрелками «откуда → куда» и колл-ауты.</p></section>";
+    html += '</div></section>';
 
-    h += '<section class="card"><h2>3 · Утилити</h2><div class="utilrow">';
-    h += '<a class="ubtn" href="#/timer">⏱ Таймер раунда</a>';
-    h += '<button class="ubtn" id="ecoBtn">💰 Эко-шпаргалка</button>';
-    h += "</div></section>";
+    html += '<section class="section"><div class="section-head"><div><h2>3. Инструменты</h2><p>Только то, что может понадобиться отдельно.</p></div><span class="section-index">03</span></div><div class="command-grid"><div class="command-note"><b>Обычный режим</b>Игроки могут смотреть состав, карты, позиции, гранаты и планы. Изменение данных и рисование открываются только после ввода пароля капитана.</div><div class="utility-row"><a class="utility-btn" href="#/bomb">Таймер бомбы · 40 сек</a><button class="utility-btn" id="ecoBtn" type="button">Эко-шпаргалка</button></div></div></section>';
 
-    h += '<section class="card"><h2>Как это работает</h2><ul class="howto">' +
-      "<li>Перед матчем кап открывает сайт, жмёт ✏️ и правит ники, позиции и гранаты под вашу игру.</li>" +
-      "<li>В игре каждый открывает свою карточку: сторона T/CT → твоя точка на схеме и 3–4 правила.</li>" +
-      "<li>Раздел «Гранаты»: стрелка на схеме = откуда кидать и куда прилетит. Линии докручиваете на праке.</li>" +
-      "<li>Всё хранится у тебя в телефоне; кнопка «Экспорт» отдаёт JSON, чтобы расшарить команде.</li>" +
-      "</ul></section>";
+    html += '<section class="section"><div class="section-head"><div><h2>Как пользоваться</h2><p>Основные возможности прежнего сайта сохранены.</p></div><span class="section-index">04</span></div><div class="card"><ul class="howto">' +
+      '<li>Перед матчем капитан входит в режим редактирования и настраивает ники, позиции, планы и гранаты.</li>' +
+      '<li>На тактической доске можно двигать игроков, ставить номера или ники, рисовать линии и стрелки разных цветов.</li>' +
+      '<li>Каждый игрок открывает свою карточку и видит личные задачи, позиции на всех трёх картах и назначенные гранаты.</li>' +
+      '<li>Экспорт и импорт находятся в панели капитана. Таймер раунда удалён, таймер бомбы вынесен в отдельную кнопку.</li>' +
+      '</ul></div></section>';
 
-    v.innerHTML = h;
+    view.innerHTML = html;
     $("#ecoBtn").onclick = showEco;
-  }
-
-  function showEco() {
-    let h = '<div class="modal" id="modal"><div class="modal-in"><h3>Эко-шпаргалка</h3><table class="eco">';
-    h += "<tr><th>Режим</th><th>Когда</th><th>Что берём</th></tr>";
-    data.eco.forEach((e) => { h += "<tr><td><b>" + esc(e.name) + "</b></td><td>" + esc(e.when) + "</td><td>" + esc(e.what) + "</td></tr>"; });
-    h += '</table><p class="muted">Правило большого пальца: после двух поражений подряд — эко или форс по решению капа. Спорим с капом — после матча, не в раунде.</p><button class="btn" id="mClose">Понятно</button></div></div>';
-    document.body.insertAdjacentHTML("beforeend", h);
-    $("#mClose").onclick = closeModal;
-    $("#modal").onclick = (e) => { if (e.target.id === "modal") closeModal(); };
-  }
-  function closeModal() { const m = $("#modal"); if (m) m.remove(); }
-
-  /* ---------- страница игрока ---------- */
-  function renderPlayerPage() {
-    const p = playerById(ui.player);
-    const v = $("#view");
-    if (!p) { location.hash = "#/"; return; }
-    const idx = data.players.indexOf(p);
-    let h = '<a class="back" href="#/">← команда</a>';
-    h += '<section class="hero phead" style="--pc:' + p.color + '"><span class="pnum">' + (idx + 1) + '</span><div><h1 class="ed" data-path="players.' + idx + '.nick">' + esc(p.nick) + '</h1><p class="ed" data-path="players.' + idx + '.role">' + esc(p.role) + "</p></div></section>";
-
-    h += '<div class="sidetabs">' + sideTab("T") + sideTab("CT") + "</div>";
-
-    // задачи
-    h += '<section class="card"><h2>Твои задачи (всегда)</h2><ul class="tasklist">';
-    p.tasks.forEach((t, i) => { h += '<li class="ed" data-path="players.' + idx + ".tasks." + i + '">' + esc(t) + "</li>"; });
-    h += "</ul></section>";
-
-    // позиции на картах
-    h += '<section class="card"><h2>Твоя позиция · ' + (ui.side === "T" ? "атака (T)" : "защита (CT)") + "</h2>";
-    Object.keys(data.maps).forEach((mid) => {
-      const d = (mapById(mid).sides[ui.side].defaults || []).find((x) => x.player === p.id);
-      if (!d) return;
-      const mk = markersFor(mid, ui.side);
-      h += '<div class="minimap"><h3>' + esc(mapById(mid).name) + "</h3>" + mapSVG(mid, { markers: mk, side: ui.side, focus: p.id, dimOthers: true, highlightZone: d.zone });
-      h += '<p class="note ed" data-path="maps.' + mid + ".sides." + ui.side + ".defaults." + (mapById(mid).sides[ui.side].defaults.indexOf(d)) + '.note"><b>Куда:</b> ' + esc(d.note) + "</p></div>";
-    });
-    h += "</section>";
-
-    // гранаты игрока
-    const my = [];
-    Object.keys(data.maps).forEach((mid) => {
-      ["T", "CT"].forEach((sd) => {
-        (mapById(mid).sides[sd].nades || []).forEach((n) => { if (n.by === p.id) my.push({ mid, sd, n }); });
-      });
-    });
-    h += '<section class="card"><h2>Твои гранаты</h2>';
-    if (!my.length) h += '<p class="muted">Пока не назначено. Кап может назначить в разделе карты → гранаты.</p>';
-    my.forEach((r) => {
-      const m = mapById(r.mid);
-      const zf = zoneById(m, r.n.from), zt = zoneById(m, r.n.to);
-      h += '<details class="nade"><summary>' + NADE_ICON[r.n.type] + " <b>" + esc(r.n.name) + '</b> <span class="tag">' + m.name + " · " + r.sd + "</span></summary>";
-      h += mapSVG(r.mid, { arrows: [{ fx: zf.x, fy: zf.y, tx: zt.x, ty: zt.y, type: r.n.type }], labels: true });
-      h += "<ol>" + r.n.steps.map((st, i) => '<li class="ed" data-path="maps.' + r.mid + ".sides." + r.sd + ".nades." + m.sides[r.sd].nades.indexOf(r.n) + ".steps." + i + '">' + esc(st) + "</li>").join("") + "</ol>";
-      h += '<p class="note"><b>Зачем:</b> <span class="ed" data-path="maps.' + r.mid + ".sides." + r.sd + ".nades." + m.sides[r.sd].nades.indexOf(r.n) + '.note">' + esc(r.n.note) + "</span></p></details>";
-    });
-    h += "</section>";
-
-    h += '<section class="card"><h2>Памятки</h2><ul class="tasklist tips">';
-    p.tips.forEach((t, i) => { h += '<li class="ed" data-path="players.' + idx + ".tips." + i + '">' + esc(t) + "</li>"; });
-    h += "</ul></section>";
-
-    v.innerHTML = h;
-    bindSideTabs();
+    bindMapImages();
     applyEdit();
   }
 
-  function sideTab(sd) {
-    return '<button class="stab ' + (ui.side === sd ? "on" : "") + '" data-side="' + sd + '">' + (sd === "T" ? "⚔ Атака (T)" : "🛡 Защита (CT)") + "</button>";
+  function showEco() {
+    let html = '<div class="modal" id="modal"><div class="modal-in"><p class="modal-kicker">Шпаргалка</p><h3>Экономика команды</h3><table class="eco"><tr><th>Режим</th><th>Когда</th><th>Закуп</th></tr>';
+    data.eco.forEach((item) => {
+      html += '<tr><td><b>' + esc(item.name) + '</b></td><td>' + esc(item.when) + '</td><td>' + esc(item.what) + '</td></tr>';
+    });
+    html += '</table><div class="row"><button class="btn ghost" id="mClose" type="button">Закрыть</button></div></div></div>';
+    document.body.insertAdjacentHTML("beforeend", html);
+    $("#mClose").onclick = closeModal;
+    $("#modal").onclick = (event) => { if (event.target.id === "modal") closeModal(); };
   }
+
+  /* ---------- player ---------- */
+  function sideTab(side) {
+    return '<button class="stab ' + (ui.side === side ? "on" : "") + '" data-side="' + side + '" type="button">' + (side === "T" ? "Атака · T" : "Защита · CT") + '</button>';
+  }
+
   function bindSideTabs() {
-    $$(".stab").forEach((b) => {
-      b.onclick = () => {
-        ui.side = b.dataset.side;
+    $$(".stab").forEach((button) => {
+      button.onclick = () => {
+        ui.side = button.dataset.side;
+        ui.selected = null;
         if (ui.map) location.hash = "#/map/" + ui.map + "/" + ui.side;
         else renderPlayerPage();
       };
     });
   }
 
-  /* ---------- страница карты ---------- */
-  function renderMapPage() {
-    const m = mapById(ui.map);
-    const v = $("#view");
-    if (!m) { location.hash = "#/"; return; }
-    const sd = m.sides[ui.side];
-    let h = '<a class="back" href="#/">← команда</a>';
-    h += '<section class="hero"><h1>' + esc(m.name) + '</h1><p>' + (ui.side === "T" ? "Атака: план, позиции, гранаты" : "Защита: план, позиции, гранаты") + "</p></section>";
-    h += '<div class="sidetabs">' + sideTab("T") + sideTab("CT") + "</div>";
-    h += '<div class="tabs">' +
-      tabBtn("pos", "Позиции") + tabBtn("nades", "Гранаты") + tabBtn("calls", "Колл-ауты") + tabBtn("plan", "План") +
-      "</div>";
+  function renderPlayerPage() {
+    const player = playerById(ui.player);
+    const view = $("#view");
+    if (!player) { location.hash = "#/"; return; }
+    const playerIndex = data.players.indexOf(player);
+    let html = '<a class="back" href="#/">← Вернуться к штабу</a>';
+    html += '<section class="hero phead" style="--pc:' + safeColor(player.color) + '"><span class="pnum">' + (playerIndex + 1) + '</span><div><p class="eyebrow">Карточка игрока №' + (playerIndex + 1) + '</p><h1 class="ed" data-path="players.' + playerIndex + '.nick">' + esc(player.nick) + '</h1><p class="ed" data-path="players.' + playerIndex + '.role">' + esc(player.role) + '</p></div></section>';
+    html += '<div class="sidetabs">' + sideTab("T") + sideTab("CT") + '</div>';
 
-    if (ui.tab === "pos") {
-      h += '<section class="card"><h2>Кто где стоит</h2>' + mapSVG(ui.map, { markers: markersFor(ui.map, ui.side), side: ui.side });
-      h += '<ul class="poslist">';
-      sd.defaults.forEach((d, i) => {
-        const p = playerById(d.player); const z = zoneById(m, d.zone);
-        h += '<li><a class="posrow" href="#/player/' + d.player + '" style="--pc:' + (p ? p.color : "#888") + '"><span class="chip-n">' + (data.players.indexOf(p) + 1) + '</span><span><b>' + esc(p ? p.nick : "?") + "</b> → " + esc(z ? z.name : d.zone) + '<small class="ed" data-path="maps.' + ui.map + ".sides." + ui.side + ".defaults." + i + '.note">' + esc(d.note) + "</small></span></a></li>";
+    html += '<section class="card"><h2>Постоянные задачи</h2><ul class="tasklist">';
+    player.tasks.forEach((task, index) => {
+      html += '<li class="ed" data-path="players.' + playerIndex + '.tasks.' + index + '">' + esc(task) + '</li>';
+    });
+    html += '</ul></section>';
+
+    html += '<section class="card"><h2>Позиции · ' + ui.side + '</h2>';
+    Object.keys(data.maps).forEach((mapId) => {
+      const map = mapById(mapId);
+      const position = map.sides[ui.side].defaults.find((item) => item.player === player.id);
+      if (!position) return;
+      const positionIndex = map.sides[ui.side].defaults.indexOf(position);
+      html += '<div class="minimap"><h3>' + esc(map.name) + '</h3>' + mapFrame(mapId, {
+        markers: markersFor(mapId, ui.side),
+        side: ui.side,
+        focus: player.id,
+        dimOthers: true,
+        labelStyle: map.sides[ui.side].markerStyle,
       });
-      h += "</ul></section>";
-    }
+      html += '<p class="note"><b>Точка:</b> <span class="ed" data-path="maps.' + mapId + '.sides.' + ui.side + '.defaults.' + positionIndex + '.note">' + esc(position.note) + '</span></p></div>';
+    });
+    html += '</section>';
 
-    if (ui.tab === "nades") {
-      h += '<section class="card"><h2>Гранаты стороны ' + ui.side + '</h2><p class="muted">Нажми на гранату — на схеме появится стрелка «откуда → куда прилетит».</p>';
-      if (editMode) h += '<button class="btn addNade" data-side="' + ui.side + '">+ добавить гранату</button>';
-      (sd.nades || []).forEach((n, i) => {
-        const zf = zoneById(m, n.from), zt = zoneById(m, n.to);
-        const open = ui.nade === i;
-        h += '<details class="nade" ' + (open ? "open" : "") + ' data-nade="' + i + '"><summary>' + NADE_ICON[n.type] + " <b>" + esc(n.name) + "</b> <span class=\"tag\">" + NADE_NAME[n.type] + (n.by ? " · " + esc((playerById(n.by) || {}).nick || "") : "") + "</span>" + (editMode ? ' <button class="del" data-del-nade="' + i + '">✕</button>' : "") + "</summary>";
-        h += mapSVG(ui.map, { arrows: [{ fx: zf.x, fy: zf.y, tx: zt.x, ty: zt.y, type: n.type }] });
-        h += "<ol>" + n.steps.map((st, si) => '<li class="ed" data-path="maps.' + ui.map + ".sides." + ui.side + ".nades." + i + ".steps." + si + '">' + esc(st) + "</li>").join("") + "</ol>";
-        h += '<p class="note"><b>Зачем:</b> <span class="ed" data-path="maps.' + ui.map + ".sides." + ui.side + ".nades." + i + '.note">' + esc(n.note) + "</span></p></details>";
+    const assigned = [];
+    Object.keys(data.maps).forEach((mapId) => {
+      ["T", "CT"].forEach((side) => {
+        mapById(mapId).sides[side].nades.forEach((nade) => {
+          if (nade.by === player.id) assigned.push({ mapId, side, nade });
+        });
       });
-      h += "</section>";
-    }
+    });
 
-    if (ui.tab === "calls") {
-      h += '<section class="card"><h2>Колл-ауты</h2><p class="muted">Нажми на зону на схеме — подскажет, что это и зачем.</p>' +
-        mapSVG(ui.map, { labels: true, highlightZone: ui.zone }) +
-        '<div id="zoneInfo">' + (ui.zone ? zoneCard(m, zoneById(m, ui.zone)) : '<p class="muted">Выбери зону…</p>') + "</div></section>";
-    }
+    html += '<section class="card"><h2>Назначенные гранаты</h2>';
+    if (!assigned.length) html += '<p class="muted">Нет назначенных гранат.</p>';
+    assigned.forEach((record) => {
+      const map = mapById(record.mapId);
+      const nadeIndex = map.sides[record.side].nades.indexOf(record.nade);
+      const from = zoneById(map, record.nade.from);
+      const to = zoneById(map, record.nade.to);
+      if (!from || !to) return;
+      html += '<details class="nade"><summary><span>' + (NADE_ICON[record.nade.type] || "•") + '</span><b>' + esc(record.nade.name) + '</b><span class="tag">' + esc(map.name) + ' · ' + record.side + '</span></summary>';
+      html += mapFrame(record.mapId, { arrows: [{ fx: from.x, fy: from.y, tx: to.x, ty: to.y, type: record.nade.type }] });
+      html += '<ol>' + record.nade.steps.map((step, index) => '<li class="ed" data-path="maps.' + record.mapId + '.sides.' + record.side + '.nades.' + nadeIndex + '.steps.' + index + '">' + esc(step) + '</li>').join("") + '</ol>';
+      html += '<p class="note"><b>Задача:</b> <span class="ed" data-path="maps.' + record.mapId + '.sides.' + record.side + '.nades.' + nadeIndex + '.note">' + esc(record.nade.note) + '</span></p></details>';
+    });
+    html += '</section>';
 
-    if (ui.tab === "plan") {
-      h += '<section class="card"><h2>План на сторону ' + ui.side + "</h2><ol class=\"planlist\">";
-      sd.plan.forEach((t, i) => { h += '<li class="ed" data-path="maps.' + ui.map + ".sides." + ui.side + ".plan." + i + '">' + esc(t) + "</li>"; });
-      h += "</ol></section>";
-    }
+    html += '<section class="card"><h2>Контрольный список</h2><ul class="tasklist tips">';
+    player.tips.forEach((tip, index) => {
+      html += '<li class="ed" data-path="players.' + playerIndex + '.tips.' + index + '">' + esc(tip) + '</li>';
+    });
+    html += '</ul></section>';
 
-    v.innerHTML = h;
+    view.innerHTML = html;
     bindSideTabs();
-    $$(".tabs .tab").forEach((b) => { b.onclick = () => { ui.tab = b.dataset.tab; ui.nade = null; ui.zone = null; renderMapPage(); }; });
-    $$(".nade").forEach((d) => { d.addEventListener("toggle", () => { if (d.open) { ui.nade = +d.dataset.nade; } }); });
-    $$("[data-del-nade]").forEach((b) => { b.onclick = (e) => { e.preventDefault(); e.stopPropagation(); if (confirm("Удалить гранату?")) { mapById(ui.map).sides[ui.side].nades.splice(+b.dataset.delNade, 1); save(); renderMapPage(); } }; });
-    const addB = $(".addNade");
-    if (addB) addB.onclick = () => addNade(ui.side);
-    const svg = $(".card .map");
-    if (svg && ui.tab === "calls") bindZoneTaps(svg);
-    if (editMode) bindMapDrag(svg);
+    bindMapImages();
     applyEdit();
   }
 
-  function tabBtn(t, label) {
-    return '<button class="tab ' + (ui.tab === t ? "on" : "") + '" data-tab="' + t + '">' + label + "</button>";
+  /* ---------- map page ---------- */
+  function tabButton(tab, label) {
+    return '<button class="tab ' + (ui.tab === tab ? "on" : "") + '" data-tab="' + tab + '" type="button">' + label + '</button>';
   }
-  function zoneCard(m, z) {
-    if (!z) return "";
-    return '<div class="zcard"><h3>' + esc(z.name) + "</h3><p>" + esc(z.desc || "") + "</p></div>";
+
+  function boardToolbar(sideData) {
+    const tools = [
+      ["select", "Выбор"],
+      ["arrow", "→ Стрелка"],
+      ["line", "— Линия"],
+      ["pen", "✎ От руки"],
+      ["number", "① Номер"],
+      ["text", "Текст"],
+    ];
+    const selectedDrawing = drawingsFor(ui.map, ui.side).find((drawing) => drawing.id === ui.selected);
+    const canEditText = selectedDrawing && (selectedDrawing.type === "text" || selectedDrawing.type === "number");
+    let html = '<div class="board-tools"><div class="tool-row"><div class="tool-block"><span class="tool-label">Рисование</span>';
+    tools.forEach((tool) => {
+      html += '<button class="tool-btn ' + (ui.drawTool === tool[0] ? "on" : "") + '" data-tool="' + tool[0] + '" type="button">' + tool[1] + '</button>';
+    });
+    html += '</div><div class="tool-block"><span class="tool-label">Цвет</span>';
+    COLORS.forEach((color) => {
+      html += '<button class="color-btn ' + (ui.drawColor === color ? "on" : "") + '" data-color="' + color + '" style="--swatch:' + color + '" title="Цвет линии" type="button"></button>';
+    });
+    html += '</div><div class="tool-block"><span class="tool-label">Управление</span>' +
+      '<button class="tool-btn" data-action="marker-style" type="button">Игроки: ' + (sideData.markerStyle === "nick" ? "ники" : "номера") + '</button>' +
+      '<button class="tool-btn" data-action="rename" type="button" ' + (canEditText ? "" : "disabled") + '>Переименовать</button>' +
+      '<button class="tool-btn" data-action="delete" type="button" ' + (ui.selected ? "" : "disabled") + '>Удалить</button>' +
+      '<button class="tool-btn" data-action="undo" type="button" ' + (sideData.drawings.length ? "" : "disabled") + '>Шаг назад</button>' +
+      '<button class="tool-btn" data-action="clear" type="button" ' + (sideData.drawings.length ? "" : "disabled") + '>Очистить</button></div></div>' +
+      '<div class="tool-help">Выберите инструмент и проведите пальцем или мышью по карте. В режиме «Выбор» можно двигать игроков и готовые пометки.</div></div>';
+    return html;
   }
+
+  function renderMapPage() {
+    const map = mapById(ui.map);
+    const view = $("#view");
+    if (!map) { location.hash = "#/"; return; }
+    const sideData = map.sides[ui.side];
+    let html = '<a class="back" href="#/">← На главную</a>';
+    html += '<section class="map-page-head"><div><p class="eyebrow">Тактическая карта</p><h1>' + esc(map.name) + '</h1><p>' + (ui.side === "T" ? "Атака: позиции, маршруты и план выхода" : "Защита: позиции, ротации и план удержания") + '</p></div><div class="map-status"><span>Сторона ' + ui.side + '</span><span>Пометок: ' + sideData.drawings.length + '</span></div></section>';
+    html += '<div class="sidetabs">' + sideTab("T") + sideTab("CT") + '</div>';
+    html += '<div class="tabs">' + tabButton("board", "Тактическая доска") + tabButton("nades", "Гранаты") + tabButton("calls", "Колл-ауты") + tabButton("plan", "План") + '</div>';
+
+    if (ui.tab === "board") {
+      html += '<section class="card board-shell"><div class="board-bar"><span class="board-title">Схема команды · ' + esc(map.name) + '</span><span class="board-mode">' + (editMode ? "Можно редактировать" : "Только просмотр") + '</span></div>';
+      if (editMode) html += boardToolbar(sideData);
+      html += '<div class="map-wrap">' + mapFrame(ui.map, {
+        markers: markersFor(ui.map, ui.side),
+        drawings: drawingsFor(ui.map, ui.side),
+        selected: ui.selected,
+        side: ui.side,
+        labelStyle: sideData.markerStyle,
+        editor: editMode,
+      }) + '</div>';
+      html += '<div class="board-footer"><p class="board-hint"><b>' + (editMode ? "Режим капитана:" : "Режим просмотра:") + '</b> ' + (editMode ? "перемещайте игроков, добавляйте номера, ники, линии, стрелки и свободные пометки." : "здесь отображаются позиции и все пометки капитана поверх изображения карты.") + '</p><div class="position-grid">';
+      sideData.defaults.forEach((position, index) => {
+        const player = playerById(position.player);
+        const zone = zoneById(map, position.zone);
+        html += '<a class="posrow" href="#/player/' + attr(position.player) + '" style="--pc:' + safeColor(player ? player.color : "#888888") + '"><b>' + esc(player ? player.nick : "Не назначен") + '</b><small class="pos-zone">' + esc(zone ? zone.name : position.zone) + '</small><small class="ed" data-path="maps.' + ui.map + '.sides.' + ui.side + '.defaults.' + index + '.note">' + esc(position.note) + '</small></a>';
+      });
+      html += '</div></div></section>';
+    }
+
+    if (ui.tab === "nades") {
+      html += '<section class="card"><h2>Гранаты · ' + ui.side + '</h2><p class="muted">Откройте гранату, чтобы увидеть направление броска на радаре.</p>';
+      if (editMode) html += '<button class="btn tiny addNade" type="button">Добавить гранату</button>';
+      sideData.nades.forEach((nade, index) => {
+        const from = zoneById(map, nade.from);
+        const to = zoneById(map, nade.to);
+        if (!from || !to) return;
+        html += '<details class="nade" data-nade="' + index + '" ' + (ui.nade === index ? "open" : "") + '><summary><span>' + (NADE_ICON[nade.type] || "•") + '</span><b class="ed" data-path="maps.' + ui.map + '.sides.' + ui.side + '.nades.' + index + '.name">' + esc(nade.name) + '</b><span class="tag">' + esc(NADE_NAME[nade.type] || nade.type) + (nade.by ? " · " + esc((playerById(nade.by) || {}).nick || "") : "") + '</span>' + (editMode ? '<button class="del" data-del-nade="' + index + '" type="button">Удалить</button>' : "") + '</summary>';
+        html += mapFrame(ui.map, { arrows: [{ fx: from.x, fy: from.y, tx: to.x, ty: to.y, type: nade.type }] });
+        html += '<ol>' + nade.steps.map((step, stepIndex) => '<li class="ed" data-path="maps.' + ui.map + '.sides.' + ui.side + '.nades.' + index + '.steps.' + stepIndex + '">' + esc(step) + '</li>').join("") + '</ol>';
+        html += '<p class="note"><b>Задача:</b> <span class="ed" data-path="maps.' + ui.map + '.sides.' + ui.side + '.nades.' + index + '.note">' + esc(nade.note) + '</span></p></details>';
+      });
+      html += '</section>';
+    }
+
+    if (ui.tab === "calls") {
+      html += '<section class="card"><h2>Колл-ауты</h2><p class="muted">Нажмите на обозначенную зону карты.</p>' + mapFrame(ui.map, { zones: true, highlightZone: ui.zone }) + '<div id="zoneInfo">' + (ui.zone ? zoneCard(zoneById(map, ui.zone)) : '<p class="muted">Зона не выбрана.</p>') + '</div></section>';
+    }
+
+    if (ui.tab === "plan") {
+      html += '<section class="card"><h2>План стороны · ' + ui.side + '</h2><ol class="planlist">';
+      sideData.plan.forEach((item, index) => {
+        html += '<li class="ed" data-path="maps.' + ui.map + '.sides.' + ui.side + '.plan.' + index + '">' + esc(item) + '</li>';
+      });
+      html += '</ol></section>';
+    }
+
+    view.innerHTML = html;
+    bindSideTabs();
+    $$(".tabs .tab").forEach((button) => {
+      button.onclick = () => {
+        ui.tab = button.dataset.tab;
+        ui.nade = null;
+        ui.zone = null;
+        ui.selected = null;
+        renderMapPage();
+      };
+    });
+    $$(".nade").forEach((details) => {
+      details.addEventListener("toggle", () => { if (details.open) ui.nade = Number(details.dataset.nade); });
+    });
+    $$("[data-del-nade]").forEach((button) => {
+      button.onclick = (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!editMode || !confirm("Удалить эту гранату?")) return;
+        sideData.nades.splice(Number(button.dataset.delNade), 1);
+        save();
+        renderMapPage();
+      };
+    });
+    const addButton = $(".addNade");
+    if (addButton) addButton.onclick = () => addNade(ui.side);
+    const radar = $(".card .tactical-map");
+    if (radar && ui.tab === "calls") bindZoneTaps(radar);
+    if (radar && ui.tab === "board" && editMode) {
+      bindBoardToolbar();
+      bindBoardEditor(radar);
+    }
+    bindMapImages();
+    applyEdit();
+  }
+
+  function zoneCard(zone) {
+    if (!zone) return "";
+    return '<div class="zcard"><h3>' + esc(zone.name) + '</h3><p>' + esc(zone.desc || "Нет описания.") + '</p></div>';
+  }
+
   function bindZoneTaps(svg) {
-    $$(".zone", svg).forEach((r) => {
-      r.classList.add("tap");
-      r.addEventListener("click", () => { ui.zone = r.dataset.zone; renderMapPage(); });
+    $$(".call-zone", svg).forEach((zone) => {
+      zone.addEventListener("click", () => {
+        ui.zone = zone.dataset.zone;
+        renderMapPage();
+      });
     });
-  }
-
-  /* ---------- таймер ---------- */
-  let timerInt = null, timerLeft = 0;
-  function renderTimerPage() {
-    const v = $("#view");
-    v.innerHTML = '<a class="back" href="#/">← команда</a>' +
-      '<section class="hero"><h1>Таймер</h1><p>Раунд 1:55 · бомба 40 сек</p></section>' +
-      '<section class="card timer"><div class="tdisp" id="tdisp">1:55</div>' +
-      '<div class="tbtns"><button class="btn big" data-t="115">Раунд 1:55</button>' +
-      '<button class="btn big" data-t="40">Бомба 0:40</button>' +
-      '<button class="btn big warn" data-t="0">Стоп</button></div>' +
-      '<p class="muted">На конце: вибрация + звук. Телефон можно положить в карман.</p></section>';
-    $$(".tbtns .btn").forEach((b) => { b.onclick = () => startTimer(+b.dataset.t); });
-  }
-  function startTimer(sec) {
-    clearInterval(timerInt);
-    timerLeft = sec;
-    paintTimer();
-    if (!sec) return;
-    timerInt = setInterval(() => {
-      timerLeft--;
-      paintTimer();
-      if (timerLeft <= 0) { clearInterval(timerInt); buzz(); }
-      else if (timerLeft <= 5) buzzShort();
-    }, 1000);
-  }
-  function paintTimer() {
-    const d = $("#tdisp"); if (!d) return;
-    const mm = Math.floor(timerLeft / 60), ss = timerLeft % 60;
-    d.textContent = mm + ":" + String(ss).padStart(2, "0");
-    d.classList.toggle("low", timerLeft <= 10 && timerLeft > 0);
-  }
-  function beep(freq, dur) {
-    try {
-      const ctx = beep.ctx || (beep.ctx = new (window.AudioContext || window.webkitAudioContext)());
-      const o = ctx.createOscillator(), g = ctx.createGain();
-      o.frequency.value = freq; o.connect(g); g.connect(ctx.destination);
-      g.gain.setValueAtTime(0.2, ctx.currentTime);
-      g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + dur);
-      o.start(); o.stop(ctx.currentTime + dur);
-    } catch (e) {}
-  }
-  function buzz() { beep(880, 0.6); beep(660, 0.9); if (navigator.vibrate) navigator.vibrate([400, 200, 400]); }
-  function buzzShort() { beep(1200, 0.12); if (navigator.vibrate) navigator.vibrate(80); }
-
-  /* ---------- режим редактирования ---------- */
-  function setEdit(on) {
-    editMode = on;
-    document.body.classList.toggle("editing", on);
-    $("#editBtn").classList.toggle("on", on);
-    $("#editPanel").hidden = !on;
-    render();
-  }
-  function applyEdit() {
-    $$(".ed").forEach((el) => {
-      el.classList.toggle("editable", editMode);
-      el.contentEditable = editMode ? "true" : "false";
-      if (editMode && !el.dataset.bound) {
-        el.dataset.bound = "1";
-        el.addEventListener("blur", () => {
-          setPath(el.dataset.path, el.textContent.trim());
-          save();
-        });
-        el.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); el.blur(); } });
-      }
-    });
-  }
-  function setPath(path, value) {
-    const parts = path.split(".");
-    let o = data;
-    for (let i = 0; i < parts.length - 1; i++) o = o[parts[i]];
-    o[parts[parts.length - 1]] = value;
-  }
-  function getPath(path) {
-    const parts = path.split(".");
-    let o = data;
-    for (const p of parts) { o = o[p]; if (o == null) return null; }
-    return o;
   }
 
   function addNade(side) {
-    const m = mapById(ui.map);
-    const n = { id: "n" + Date.now(), type: "smoke", name: "Новая граната", by: data.players[0].id, from: m.zones[0].id, to: m.zones[1].id, steps: ["Откуда кидаем (опиши позицию)"], note: "Зачем кидаем" };
-    m.sides[side].nades.push(n);
+    if (!editMode) return;
+    const map = mapById(ui.map);
+    const nade = {
+      id: "nade-" + Date.now(),
+      type: "smoke",
+      name: "Новая граната",
+      by: data.players[0].id,
+      from: map.zones[0].id,
+      to: map.zones[1].id,
+      steps: ["Опишите исходную позицию и ориентир"],
+      note: "Опишите задачу гранаты",
+    };
+    map.sides[side].nades.push(nade);
+    ui.nade = map.sides[side].nades.length - 1;
     save();
-    ui.tab = "nades"; ui.nade = m.sides[side].nades.length - 1;
     renderMapPage();
   }
 
-  /* перетаскивание маркеров/гранат в режиме редактирования */
-  function bindMapDrag(svg) {
-    if (!svg) return;
-    svg.querySelectorAll(".pmk").forEach((g) => {
-      g.classList.add("drag");
-      g.addEventListener("pointerdown", (e) => startDrag(e, svg, g, "player"));
+  /* ---------- tactical editor ---------- */
+  function newDrawingId() {
+    return "draw-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 7);
+  }
+
+  function bindBoardToolbar() {
+    $$("[data-tool]").forEach((button) => {
+      button.onclick = () => {
+        ui.drawTool = button.dataset.tool;
+        ui.selected = null;
+        renderMapPage();
+      };
+    });
+
+    $$("[data-color]").forEach((button) => {
+      button.onclick = () => {
+        ui.drawColor = button.dataset.color;
+        const drawing = drawingsFor(ui.map, ui.side).find((item) => item.id === ui.selected);
+        if (drawing) {
+          drawing.color = ui.drawColor;
+          save();
+        }
+        renderMapPage();
+      };
+    });
+
+    $$("[data-action]").forEach((button) => {
+      button.onclick = () => boardAction(button.dataset.action);
     });
   }
-  function startDrag(e, svg, g, kind) {
-    e.preventDefault();
-    const pid = g.dataset.player, side = g.dataset.side, mid = g.dataset.map;
-    const move = (ev) => {
-      const pt = svgPoint(svg, ev);
-      const d = mapById(mid).sides[side].defaults.find((x) => x.player === pid);
-      if (!d) return;
-      const z = zoneById(mapById(mid), d.zone);
-      d.dx = Math.round((pt.x - z.x) * 10) / 10;
-      d.dy = Math.round((pt.y - z.y) * 10) / 10;
-      g.setAttribute("transform", "translate(" + pt.x + "," + pt.y + ")");
+
+  function boardAction(action) {
+    const sideData = mapById(ui.map).sides[ui.side];
+    const drawings = drawingsFor(ui.map, ui.side);
+    const index = drawings.findIndex((drawing) => drawing.id === ui.selected);
+
+    if (action === "marker-style") {
+      sideData.markerStyle = sideData.markerStyle === "nick" ? "number" : "nick";
+      save();
+      renderMapPage();
+      return;
+    }
+    if (action === "delete" && index >= 0) {
+      drawings.splice(index, 1);
+      ui.selected = null;
+      save();
+      renderMapPage();
+      return;
+    }
+    if (action === "rename" && index >= 0) {
+      const drawing = drawings[index];
+      requestBoardText(drawing.type, drawing.text || "", (value) => {
+        drawing.text = value;
+        save();
+        renderMapPage();
+      });
+      return;
+    }
+    if (action === "undo" && drawings.length) {
+      drawings.pop();
+      ui.selected = null;
+      save();
+      renderMapPage();
+      return;
+    }
+    if (action === "clear" && drawings.length && confirm("Удалить все нарисованные линии и метки на этой стороне?")) {
+      sideData.drawings = [];
+      ui.selected = null;
+      save();
+      renderMapPage();
+    }
+  }
+
+  function requestBoardText(type, initialValue, onSave) {
+    const isNumber = type === "number";
+    closeModal();
+    const html = '<div class="modal" id="modal"><div class="modal-in narrow"><p class="modal-kicker">Пометка на карте</p><h3>' + (isNumber ? "Номер в обводке" : "Текст или ник") + '</h3><p class="muted">' + (isNumber ? "Введите число от 1 до 99." : "Введите короткую подпись, которая будет видна поверх карты.") + '</p><form id="boardTextForm"><label class="field"><span>' + (isNumber ? "Номер" : "Подпись") + '</span><input id="boardTextInput" ' + (isNumber ? 'inputmode="numeric" maxlength="2"' : 'maxlength="24"') + ' value="' + attr(initialValue) + '" required></label><div class="form-error" id="boardTextError"></div><div class="row"><button class="btn" type="submit">Сохранить</button><button class="btn ghost" id="mClose" type="button">Отмена</button></div></form></div></div>';
+    document.body.insertAdjacentHTML("beforeend", html);
+    const input = $("#boardTextInput");
+    input.focus();
+    input.select();
+    $("#mClose").onclick = closeModal;
+    $("#modal").onclick = (event) => { if (event.target.id === "modal") closeModal(); };
+    $("#boardTextForm").onsubmit = (event) => {
+      event.preventDefault();
+      let value = input.value.trim();
+      if (isNumber) value = value.replace(/\D/g, "").slice(0, 2);
+      else value = value.slice(0, 24);
+      if (!value || (isNumber && (Number(value) < 1 || Number(value) > 99))) {
+        $("#boardTextError").textContent = isNumber ? "Нужно число от 1 до 99." : "Введите подпись.";
+        return;
+      }
+      closeModal();
+      onSave(value);
+    };
+  }
+
+  function bindBoardEditor(svg) {
+    svg.addEventListener("pointerdown", (event) => {
+      if (!editMode || event.button > 0) return;
+      const point = svgPoint(svg, event);
+      const drawingElement = event.target.closest("[data-drawing-id]");
+      const playerElement = event.target.closest(".pmk");
+
+      if (ui.drawTool === "select") {
+        event.preventDefault();
+        if (playerElement) {
+          ui.selected = null;
+          startPlayerDrag(event, svg, playerElement);
+        } else if (drawingElement) {
+          ui.selected = drawingElement.dataset.drawingId;
+          startDrawingDrag(event, svg, drawingElement);
+        } else {
+          ui.selected = null;
+          renderMapPage();
+        }
+        return;
+      }
+
+      if (ui.drawTool === "number" || ui.drawTool === "text") {
+        event.preventDefault();
+        const drawingType = ui.drawTool;
+        requestBoardText(drawingType, drawingType === "number" ? "1" : "", (value) => {
+          const drawing = {
+            id: newDrawingId(),
+            type: drawingType,
+            x: round1(point.x),
+            y: round1(point.y),
+            text: value,
+            color: ui.drawColor,
+          };
+          drawingsFor(ui.map, ui.side).push(drawing);
+          ui.selected = drawing.id;
+          save();
+          renderMapPage();
+        });
+        return;
+      }
+
+      if (ui.drawTool === "arrow" || ui.drawTool === "line") {
+        event.preventDefault();
+        startLineDraw(event, svg, point, ui.drawTool);
+        return;
+      }
+
+      if (ui.drawTool === "pen") {
+        event.preventDefault();
+        startPenDraw(event, svg, point);
+      }
+    });
+  }
+
+  function startLineDraw(event, svg, start, type) {
+    const preview = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    preview.setAttribute("class", "preview-line");
+    preview.setAttribute("stroke", ui.drawColor);
+    preview.setAttribute("x1", start.x);
+    preview.setAttribute("y1", start.y);
+    preview.setAttribute("x2", start.x);
+    preview.setAttribute("y2", start.y);
+    svg.appendChild(preview);
+    let end = start;
+
+    const move = (moveEvent) => {
+      end = svgPoint(svg, moveEvent);
+      preview.setAttribute("x2", end.x);
+      preview.setAttribute("y2", end.y);
     };
     const up = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
+      removeWindowDrag(move, up);
+      preview.remove();
+      const distance = Math.hypot(end.x - start.x, end.y - start.y);
+      if (distance < 2) return;
+      const drawing = {
+        id: newDrawingId(), type,
+        x1: round1(start.x), y1: round1(start.y), x2: round1(end.x), y2: round1(end.y),
+        color: ui.drawColor,
+      };
+      drawingsFor(ui.map, ui.side).push(drawing);
+      ui.selected = drawing.id;
       save();
+      renderMapPage();
     };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
+    addWindowDrag(move, up);
   }
-  function svgPoint(svg, ev) {
-    const r = svg.getBoundingClientRect();
-    const vb = svg.viewBox.baseVal;
+
+  function startPenDraw(event, svg, start) {
+    const preview = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+    preview.setAttribute("class", "preview-line");
+    preview.setAttribute("stroke", ui.drawColor);
+    svg.appendChild(preview);
+    const points = [[round1(start.x), round1(start.y)]];
+    preview.setAttribute("points", points[0].join(","));
+
+    const move = (moveEvent) => {
+      const point = svgPoint(svg, moveEvent);
+      const last = points[points.length - 1];
+      if (Math.hypot(point.x - last[0], point.y - last[1]) < .65) return;
+      points.push([round1(point.x), round1(point.y)]);
+      preview.setAttribute("points", points.map((item) => item.join(",")).join(" "));
+    };
+    const up = () => {
+      removeWindowDrag(move, up);
+      preview.remove();
+      if (points.length < 2) return;
+      const drawing = { id: newDrawingId(), type: "pen", points, color: ui.drawColor };
+      drawingsFor(ui.map, ui.side).push(drawing);
+      ui.selected = drawing.id;
+      save();
+      renderMapPage();
+    };
+    addWindowDrag(move, up);
+  }
+
+  function startPlayerDrag(event, svg, element) {
+    const map = mapById(ui.map);
+    const position = map.sides[ui.side].defaults[Number(element.dataset.defaultIndex)];
+    if (!position) return;
+    const zone = zoneById(map, position.zone) || { x: 50, y: 50 };
+    let finalPoint = { x: zone.x + (position.dx || 0), y: zone.y + (position.dy || 0) };
+
+    const move = (moveEvent) => {
+      finalPoint = svgPoint(svg, moveEvent);
+      element.setAttribute("transform", "translate(" + finalPoint.x + "," + finalPoint.y + ")");
+    };
+    const up = () => {
+      removeWindowDrag(move, up);
+      position.dx = round1(finalPoint.x - zone.x);
+      position.dy = round1(finalPoint.y - zone.y);
+      save();
+      renderMapPage();
+    };
+    addWindowDrag(move, up);
+  }
+
+  function startDrawingDrag(event, svg, element) {
+    const drawings = drawingsFor(ui.map, ui.side);
+    const drawing = drawings.find((item) => item.id === element.dataset.drawingId);
+    if (!drawing) return;
+    element.classList.add("selected");
+    const start = svgPoint(svg, event);
+    const bounds = drawingBounds(drawing);
+    let delta = { x: 0, y: 0 };
+
+    const move = (moveEvent) => {
+      const point = svgPoint(svg, moveEvent);
+      delta.x = clamp(point.x - start.x, -bounds.minX, 100 - bounds.maxX);
+      delta.y = clamp(point.y - start.y, -bounds.minY, 100 - bounds.maxY);
+      element.setAttribute("transform", "translate(" + delta.x + "," + delta.y + ")");
+    };
+    const up = () => {
+      removeWindowDrag(move, up);
+      shiftDrawing(drawing, delta.x, delta.y);
+      save();
+      renderMapPage();
+    };
+    addWindowDrag(move, up);
+  }
+
+  function drawingBounds(drawing) {
+    if (drawing.type === "arrow" || drawing.type === "line") {
+      return { minX: Math.min(drawing.x1, drawing.x2), maxX: Math.max(drawing.x1, drawing.x2), minY: Math.min(drawing.y1, drawing.y2), maxY: Math.max(drawing.y1, drawing.y2) };
+    }
+    if (drawing.type === "pen" && drawing.points.length) {
+      const xs = drawing.points.map((point) => point[0]);
+      const ys = drawing.points.map((point) => point[1]);
+      return { minX: Math.min.apply(null, xs), maxX: Math.max.apply(null, xs), minY: Math.min.apply(null, ys), maxY: Math.max.apply(null, ys) };
+    }
+    return { minX: drawing.x, maxX: drawing.x, minY: drawing.y, maxY: drawing.y };
+  }
+
+  function shiftDrawing(drawing, dx, dy) {
+    if (drawing.type === "arrow" || drawing.type === "line") {
+      drawing.x1 = round1(drawing.x1 + dx); drawing.y1 = round1(drawing.y1 + dy);
+      drawing.x2 = round1(drawing.x2 + dx); drawing.y2 = round1(drawing.y2 + dy);
+    } else if (drawing.type === "pen") {
+      drawing.points = drawing.points.map((point) => [round1(point[0] + dx), round1(point[1] + dy)]);
+    } else {
+      drawing.x = round1(drawing.x + dx); drawing.y = round1(drawing.y + dy);
+    }
+  }
+
+  function addWindowDrag(move, up) {
+    window.addEventListener("pointermove", move, { passive: false });
+    window.addEventListener("pointerup", up, { once: true });
+    window.addEventListener("pointercancel", up, { once: true });
+  }
+
+  function removeWindowDrag(move, up) {
+    window.removeEventListener("pointermove", move);
+    window.removeEventListener("pointerup", up);
+    window.removeEventListener("pointercancel", up);
+  }
+
+  function svgPoint(svg, event) {
+    const rect = svg.getBoundingClientRect();
     return {
-      x: Math.max(0, Math.min(100, ((ev.clientX - r.left) / r.width) * vb.width)),
-      y: Math.max(0, Math.min(100, ((ev.clientY - r.top) / r.height) * vb.height)),
+      x: clamp(((event.clientX - rect.left) / rect.width) * 100, 0, 100),
+      y: clamp(((event.clientY - rect.top) / rect.height) * 100, 0, 100),
     };
   }
 
-  /* ---------- экспорт / импорт ---------- */
-  function exportJSON() {
-    const txt = JSON.stringify(data, null, 2);
-    let h = '<div class="modal" id="modal"><div class="modal-in"><h3>Экспорт настроек</h3><p class="muted">Скопируй и отправь команде — они вставят через «Импорт». Или сохрани как файл data-backup.json.</p><textarea id="expTa" readonly>' + esc(txt) + '</textarea><div class="row"><button class="btn" id="cpBtn">Скопировать</button><button class="btn ghost" id="mClose">Закрыть</button></div></div></div>';
-    document.body.insertAdjacentHTML("beforeend", h);
-    $("#cpBtn").onclick = () => { const ta = $("#expTa"); ta.select(); ta.setSelectionRange(0, 1e6); try { navigator.clipboard.writeText(ta.value); } catch (e) { document.execCommand("copy"); } $("#cpBtn").textContent = "Скопировано ✓"; };
-    $("#mClose").onclick = closeModal;
+  function round1(value) {
+    return Math.round(value * 10) / 10;
   }
-  function importJSON() {
-    let h = '<div class="modal" id="modal"><div class="modal-in"><h3>Импорт настроек</h3><p class="muted">Вставь JSON от капа и нажми «Загрузить».</p><textarea id="impTa" placeholder="{...}"></textarea><div class="row"><button class="btn" id="doImp">Загрузить</button><button class="btn ghost" id="mClose">Закрыть</button></div></div></div>';
-    document.body.insertAdjacentHTML("beforeend", h);
-    $("#doImp").onclick = () => {
-      try {
-        const obj = JSON.parse($("#impTa").value);
-        if (!obj.players || !obj.maps) throw new Error("bad");
-        obj.version = BASE.version;
-        data = obj; save(); closeModal(); render();
-      } catch (e) { alert("Не похоже на JSON плейбука :("); }
+
+  /* ---------- bomb timer ---------- */
+  function renderBombPage() {
+    const view = $("#view");
+    view.innerHTML = '<a class="back" href="#/">← Вернуться к штабу</a><section class="hero"><p class="eyebrow">Отдельный инструмент</p><h1>Таймер бомбы</h1><p>Отдельный спокойный таймер после установки бомбы.</p></section>' +
+      '<section class="card bomb-card"><div class="bomb-label">Бомба установлена · 40 секунд</div><div class="tdisp" id="tdisp">' + formatTime(timerLeft) + '</div><div class="tbtns"><button class="btn big" id="bombStart" type="button">Старт · 40 сек</button><button class="btn ghost big" id="bombStop" type="button">Сбросить</button></div><p class="timer-note">Последние пять секунд: короткий звук и вибрация. Таймер не запускается автоматически.</p></section>';
+    $("#bombStart").onclick = () => startBomb(40);
+    $("#bombStop").onclick = () => startBomb(0);
+    paintTimer();
+  }
+
+  function startBomb(seconds) {
+    clearInterval(timerInt);
+    timerLeft = seconds || 40;
+    paintTimer();
+    if (!seconds) return;
+    timerInt = setInterval(() => {
+      timerLeft -= 1;
+      paintTimer();
+      if (timerLeft <= 0) {
+        clearInterval(timerInt);
+        buzzEnd();
+      } else if (timerLeft <= 5) {
+        buzzShort();
+      }
+    }, 1000);
+  }
+
+  function formatTime(seconds) {
+    const value = Math.max(0, seconds);
+    return "00:" + String(value).padStart(2, "0");
+  }
+
+  function paintTimer() {
+    const display = $("#tdisp");
+    if (!display) return;
+    display.textContent = formatTime(timerLeft);
+    display.classList.toggle("low", timerLeft <= 10 && timerLeft > 0);
+  }
+
+  function beep(frequency, duration) {
+    try {
+      const AudioContext = window.AudioContext || window.webkitAudioContext;
+      const context = beep.context || (beep.context = new AudioContext());
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+      oscillator.frequency.value = frequency;
+      oscillator.connect(gain);
+      gain.connect(context.destination);
+      gain.gain.setValueAtTime(.12, context.currentTime);
+      gain.gain.exponentialRampToValueAtTime(.001, context.currentTime + duration);
+      oscillator.start();
+      oscillator.stop(context.currentTime + duration);
+    } catch (error) {}
+  }
+
+  function buzzShort() {
+    beep(980, .1);
+    if (navigator.vibrate) navigator.vibrate(55);
+  }
+
+  function buzzEnd() {
+    beep(720, .45);
+    if (navigator.vibrate) navigator.vibrate([250, 150, 350]);
+  }
+
+  /* ---------- captain password ---------- */
+  function lockConfig() {
+    try { return JSON.parse(localStorage.getItem(LOCK_KEY) || "null"); } catch (error) { return null; }
+  }
+
+  function randomSalt() {
+    try {
+      const bytes = new Uint8Array(16);
+      crypto.getRandomValues(bytes);
+      return Array.from(bytes).map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    } catch (error) {
+      return Math.random().toString(36).slice(2) + Date.now().toString(36);
+    }
+  }
+
+  async function passwordHash(password, salt) {
+    const value = salt + "::" + password;
+    if (window.crypto && crypto.subtle && window.TextEncoder) {
+      const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+      return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    }
+    let hash = 2166136261;
+    for (let index = 0; index < value.length; index++) {
+      hash ^= value.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+    return "fallback-" + (hash >>> 0).toString(16);
+  }
+
+  function openCaptainGate(forceSetup) {
+    const config = lockConfig();
+    const setup = forceSetup || !config;
+    closeModal();
+    const html = '<div class="modal" id="modal"><div class="modal-in narrow"><p class="modal-kicker">Защищённый доступ</p><h3>' + (setup ? (forceSetup ? "Новый пароль" : "Установить пароль капитана") : "Вход капитана") + '</h3><p class="muted">' + (setup ? "Пароль будет запрашиваться при каждом новом открытии режима правок на этом устройстве." : "Только после проверки пароля станут доступны изменения и рисование поверх карт.") + '</p><form id="captainForm"><label class="field"><span>Пароль</span><input id="captainPass" type="password" autocomplete="current-password" minlength="4" required></label>' + (setup ? '<label class="field"><span>Повторите пароль</span><input id="captainPass2" type="password" autocomplete="new-password" minlength="4" required></label>' : "") + '<div class="form-error" id="captainError"></div><div class="row"><button class="btn" type="submit">' + (setup ? "Сохранить пароль" : "Разблокировать") + '</button><button class="btn ghost" id="mClose" type="button">Отмена</button></div></form><p class="muted">Пароль хранится локально в виде хеша и не попадает в экспорт плейбука.</p></div></div>';
+    document.body.insertAdjacentHTML("beforeend", html);
+    $("#mClose").onclick = closeModal;
+    $("#modal").onclick = (event) => { if (event.target.id === "modal") closeModal(); };
+    $("#captainPass").focus();
+    $("#captainForm").onsubmit = async (event) => {
+      event.preventDefault();
+      const password = $("#captainPass").value;
+      const error = $("#captainError");
+      if (password.length < 4) { error.textContent = "Минимум 4 символа."; return; }
+      if (setup) {
+        if (password !== $("#captainPass2").value) { error.textContent = "Пароли не совпадают."; return; }
+        const salt = randomSalt();
+        const hash = await passwordHash(password, salt);
+        localStorage.setItem(LOCK_KEY, JSON.stringify({ salt, hash, version: 1 }));
+        closeModal();
+        setEdit(true);
+        toast(forceSetup ? "Пароль капитана изменён" : "Пароль установлен. Режим капитана открыт");
+      } else {
+        const hash = await passwordHash(password, config.salt);
+        if (hash !== config.hash) { error.textContent = "Неверный пароль."; $("#captainPass").select(); return; }
+        closeModal();
+        setEdit(true);
+        toast("Режим капитана открыт");
+      }
     };
-    $("#mClose").onclick = closeModal;
   }
 
-  /* ---------- рендер ---------- */
-  function render() { route(); }
-
-  function boot() {
-    document.getElementById("editBtn").onclick = () => setEdit(!editMode);
-    document.getElementById("expBtn").onclick = exportJSON;
-    document.getElementById("impBtn").onclick = importJSON;
-    document.getElementById("rstBtn").onclick = resetData;
-    window.addEventListener("hashchange", route);
-    if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
+  function setEdit(on) {
+    editMode = Boolean(on);
+    ui.selected = null;
+    ui.drawTool = "select";
+    document.body.classList.toggle("editing", editMode);
+    $("#editBtn").classList.toggle("on", editMode);
+    $("#editBtn").textContent = editMode ? "Закончить правки" : "Режим капитана";
+    $("#editPanel").hidden = !editMode;
     render();
   }
+
+  function applyEdit() {
+    $$(".ed").forEach((element) => {
+      element.classList.toggle("editable", editMode);
+      element.contentEditable = editMode ? "true" : "false";
+      if (!editMode || element.dataset.bound) return;
+      element.dataset.bound = "1";
+      element.addEventListener("click", (event) => {
+        if (editMode) event.preventDefault();
+      });
+      element.addEventListener("blur", () => {
+        setPath(element.dataset.path, element.textContent.trim());
+        save();
+      });
+      element.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          element.blur();
+        }
+      });
+    });
+  }
+
+  /* ---------- import/export ---------- */
+  function exportJSON() {
+    if (!editMode) return;
+    const text = JSON.stringify(data, null, 2);
+    const html = '<div class="modal" id="modal"><div class="modal-in"><p class="modal-kicker">Данные капитана</p><h3>Экспорт плейбука</h3><p class="muted">Скопируйте JSON. Пароль капитана в экспорт не включается.</p><textarea id="expTa" readonly>' + esc(text) + '</textarea><div class="row"><button class="btn" id="cpBtn" type="button">Скопировать</button><button class="btn ghost" id="mClose" type="button">Закрыть</button></div></div></div>';
+    document.body.insertAdjacentHTML("beforeend", html);
+    $("#cpBtn").onclick = async () => {
+      const textarea = $("#expTa");
+      try { await navigator.clipboard.writeText(textarea.value); } catch (error) { textarea.select(); document.execCommand("copy"); }
+      $("#cpBtn").textContent = "Скопировано";
+    };
+    $("#mClose").onclick = closeModal;
+  }
+
+  function importJSON() {
+    if (!editMode) return;
+    const html = '<div class="modal" id="modal"><div class="modal-in"><p class="modal-kicker">Данные капитана</p><h3>Импорт плейбука</h3><p class="muted">Вставьте JSON плейбука. Текущие позиции и рисунки будут заменены.</p><textarea id="impTa" placeholder="{ ... }"></textarea><div class="form-error" id="importError"></div><div class="row"><button class="btn" id="doImp" type="button">Загрузить</button><button class="btn ghost" id="mClose" type="button">Закрыть</button></div></div></div>';
+    document.body.insertAdjacentHTML("beforeend", html);
+    $("#doImp").onclick = () => {
+      try {
+        const value = JSON.parse($("#impTa").value);
+        if (!value.players || !value.maps) throw new Error("invalid");
+        data = normalizeData(value);
+        save();
+        closeModal();
+        render();
+        toast("Плейбук импортирован");
+      } catch (error) {
+        $("#importError").textContent = "Файл не похож на экспорт этого плейбука.";
+      }
+    };
+    $("#mClose").onclick = closeModal;
+  }
+
+  /* ---------- lifecycle ---------- */
+  function render() {
+    const parts = parseHash();
+    if (parts[0] === "map") renderMapPage();
+    else if (parts[0] === "player") renderPlayerPage();
+    else if (parts[0] === "bomb" || parts[0] === "timer") renderBombPage();
+    else renderHome();
+  }
+
+  function boot() {
+    const editButton = $("#editBtn");
+    const exportButton = $("#expBtn");
+    const importButton = $("#impBtn");
+    const passwordButton = $("#passBtn");
+    const resetButton = $("#rstBtn");
+
+    if (editButton) {
+      editButton.onclick = () => {
+        if (editMode) {
+          setEdit(false);
+          toast("Режим капитана закрыт");
+        } else {
+          openCaptainGate(false);
+        }
+      };
+    }
+    if (exportButton) exportButton.onclick = exportJSON;
+    if (importButton) importButton.onclick = importJSON;
+    if (passwordButton) passwordButton.onclick = () => { if (editMode) openCaptainGate(true); };
+    if (resetButton) resetButton.onclick = resetData;
+    window.addEventListener("hashchange", route);
+    // Старые версии сайта использовали агрессивный offline-кэш. Удаляем его,
+    // чтобы HTML, скрипты и изображения всегда загружались одной версии.
+    if ("serviceWorker" in navigator && navigator.serviceWorker.getRegistrations) {
+      navigator.serviceWorker.getRegistrations().then((registrations) => {
+        registrations.forEach((registration) => registration.unregister());
+      }).catch(() => {});
+    }
+    if (window.caches && caches.keys) {
+      caches.keys().then((keys) => {
+        keys.filter((key) => key.indexOf("cs2-playbook-") === 0).forEach((key) => caches.delete(key));
+      }).catch(() => {});
+    }
+    route();
+  }
+
   document.addEventListener("DOMContentLoaded", boot);
 })();
