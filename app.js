@@ -107,6 +107,24 @@
     toastTimer = setTimeout(() => { element.hidden = true; }, 2300);
   }
 
+  function bindMapImages() {
+    $$(".map-photo, .map-card-photo").forEach((image) => {
+      const showError = () => {
+        if (image.dataset.failed) return;
+        image.dataset.failed = "1";
+        image.classList.add("failed");
+        const holder = image.parentElement;
+        if (!holder || holder.querySelector(".map-load-error, .map-error")) return;
+        const message = document.createElement("div");
+        message.className = image.classList.contains("map-photo") ? "map-load-error" : "map-error";
+        message.textContent = "Изображение карты не загрузилось. Обновите страницу.";
+        holder.appendChild(message);
+      };
+      image.addEventListener("error", showError, { once: true });
+      if (image.complete && !image.naturalWidth) showError();
+    });
+  }
+
   function setPath(path, value) {
     const parts = path.split(".");
     let target = data;
@@ -178,6 +196,14 @@
       '<text class="tactic-label" y=".1" fill="' + color + '">' + esc(label) + '</text></g>';
   }
 
+  function mapFrame(mapId, options) {
+    const map = mapById(mapId);
+    return '<div class="map-canvas" data-map-frame="' + attr(mapId) + '">' +
+      '<img class="map-photo" src="' + attr(map.image) + '?v=6" alt="Карта ' + attr(map.name) + '" draggable="false">' +
+      mapSVG(mapId, options) +
+      '</div>';
+  }
+
   function mapSVG(mapId, options) {
     const opts = options || {};
     const map = mapById(mapId);
@@ -195,10 +221,9 @@
       defs += '<marker id="' + markerId + '" viewBox="0 0 10 10" refX="8.2" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="' + safeColor(drawing.color) + '"/></marker>';
     });
 
-    let svg = '<svg class="map tactical-map' + (opts.editor ? " editor-active" : "") + '" viewBox="0 0 100 100" data-map="' + attr(mapId) + '" data-side="' + attr(opts.side || "") + '" data-arrow-id="' + nadeArrowId + '" role="img" aria-label="Тактическая карта ' + attr(map.name) + '">';
+    let svg = '<svg class="map tactical-map' + (opts.editor ? " editor-active" : "") + '" viewBox="0 0 100 100" data-map="' + attr(mapId) + '" data-side="' + attr(opts.side || "") + '" data-arrow-id="' + nadeArrowId + '" role="img" aria-label="Тактические пометки карты ' + attr(map.name) + '">';
     svg += '<defs>' + defs + '</defs>';
-    svg += '<rect width="100" height="100" fill="#000"/>';
-    svg += '<image class="map-image" href="' + attr(map.image) + '" x="0" y="0" width="100" height="100" preserveAspectRatio="xMidYMid meet"/>';
+    svg += '<rect class="map-hit-area" width="100" height="100" fill="transparent"/>';
 
     if (opts.zones) {
       map.zones.forEach((zone) => {
@@ -282,31 +307,39 @@
   /* ---------- home ---------- */
   function renderHome() {
     const view = $("#view");
-    let html = '<section class="hero"><p class="eyebrow">TEAM OPERATIONS / ACTIVE PLAYBOOK</p><div class="hero-row"><div><h1 class="ed" data-path="meta.title">' + esc(data.meta.title) + '</h1><p class="ed" data-path="meta.subtitle">' + esc(data.meta.subtitle) + '</p></div></div>' +
-      '<div class="hero-meta"><span class="meta-chip">3 ACTIVE MAPS</span><span class="meta-chip">T / CT PLANS</span><span class="meta-chip">CAPTAIN LOCK</span></div></section>';
+    let html = '<section class="hero"><p class="eyebrow">Командный плейбук CS2</p><div class="hero-row"><div><h1 class="ed" data-path="meta.title">' + esc(data.meta.title) + '</h1><p class="ed" data-path="meta.subtitle">' + esc(data.meta.subtitle) + '</p></div></div>' +
+      '<div class="hero-meta"><span class="meta-chip">3 карты</span><span class="meta-chip">Планы T и CT</span><span class="meta-chip">Доступ капитана по паролю</span></div></section>';
 
-    html += '<section class="section"><div class="section-head"><h2>Карты / Tactical boards</h2><span class="section-index">01</span></div><div class="mapcards">';
-    Object.keys(data.maps).forEach((mapId, index) => {
-      const map = data.maps[mapId];
-      html += '<a class="mapcard" href="#/map/' + mapId + '/T"><div class="mapcard-thumb"><img src="' + attr(map.image) + '" alt="Радар карты ' + attr(map.name) + '"><span class="mapcard-code">MAP · ' + String(index + 1).padStart(2, "0") + '</span></div><div class="mapcard-info"><span class="mapcard-name">' + esc(map.name) + '</span><span class="mapcard-open">ОТКРЫТЬ →</span></div></a>';
-    });
-    html += '</div></section>';
-
-    html += '<section class="section"><div class="section-head"><h2>Состав / Roles</h2><span class="section-index">02</span></div><div class="roster">';
+    html += '<section class="section"><div class="section-head"><div><h2>1. Кто ты?</h2><p>Выбери себя, чтобы открыть позиции, задачи и гранаты.</p></div><span class="section-index">01</span></div><div class="roster">';
     data.players.forEach((player, index) => {
       html += '<a class="chip" style="--pc:' + safeColor(player.color) + '" href="#/player/' + attr(player.id) + '"><span class="chip-n">' + (index + 1) + '</span><span class="chip-t"><b>' + esc(player.nick) + '</b><small>' + esc(player.role) + '</small></span></a>';
     });
     html += '</div></section>';
 
-    html += '<section class="section"><div class="section-head"><h2>Служебные инструменты</h2><span class="section-index">03</span></div><div class="command-grid"><div class="command-note"><b>Режим просмотра</b>Игроки видят карты, позиции и планы. Любые правки и рисование доступны только после входа капитана.</div><div class="utility-row"><a class="utility-btn" href="#/bomb">BOMB TIMER · 40S</a><button class="utility-btn" id="ecoBtn" type="button">ЭКОНОМИКА</button></div></div></section>';
+    html += '<section class="section"><div class="section-head"><div><h2>2. Карты</h2><p>Открой карту и выбери сторону. Все пометки капитана будут поверх изображения.</p></div><span class="section-index">02</span></div><div class="mapcards">';
+    Object.keys(data.maps).forEach((mapId, index) => {
+      const map = data.maps[mapId];
+      html += '<a class="mapcard" href="#/map/' + mapId + '/T"><div class="mapcard-thumb"><img class="map-card-photo" src="' + attr(map.image) + '?v=6" alt="Карта ' + attr(map.name) + '" loading="eager" decoding="async"><span class="mapcard-code">Карта ' + (index + 1) + '</span></div><div class="mapcard-info"><span class="mapcard-name">' + esc(map.name) + '</span><span class="mapcard-open">Открыть →</span></div></a>';
+    });
+    html += '</div></section>';
+
+    html += '<section class="section"><div class="section-head"><div><h2>3. Инструменты</h2><p>Только то, что может понадобиться отдельно.</p></div><span class="section-index">03</span></div><div class="command-grid"><div class="command-note"><b>Обычный режим</b>Игроки могут смотреть состав, карты, позиции, гранаты и планы. Изменение данных и рисование открываются только после ввода пароля капитана.</div><div class="utility-row"><a class="utility-btn" href="#/bomb">Таймер бомбы · 40 сек</a><button class="utility-btn" id="ecoBtn" type="button">Эко-шпаргалка</button></div></div></section>';
+
+    html += '<section class="section"><div class="section-head"><div><h2>Как пользоваться</h2><p>Основные возможности прежнего сайта сохранены.</p></div><span class="section-index">04</span></div><div class="card"><ul class="howto">' +
+      '<li>Перед матчем капитан входит в режим редактирования и настраивает ники, позиции, планы и гранаты.</li>' +
+      '<li>На тактической доске можно двигать игроков, ставить номера или ники, рисовать линии и стрелки разных цветов.</li>' +
+      '<li>Каждый игрок открывает свою карточку и видит личные задачи, позиции на всех трёх картах и назначенные гранаты.</li>' +
+      '<li>Экспорт и импорт находятся в панели капитана. Таймер раунда удалён, таймер бомбы вынесен в отдельную кнопку.</li>' +
+      '</ul></div></section>';
 
     view.innerHTML = html;
     $("#ecoBtn").onclick = showEco;
+    bindMapImages();
     applyEdit();
   }
 
   function showEco() {
-    let html = '<div class="modal" id="modal"><div class="modal-in"><p class="modal-kicker">Reference</p><h3>Экономика команды</h3><table class="eco"><tr><th>Режим</th><th>Когда</th><th>Закуп</th></tr>';
+    let html = '<div class="modal" id="modal"><div class="modal-in"><p class="modal-kicker">Шпаргалка</p><h3>Экономика команды</h3><table class="eco"><tr><th>Режим</th><th>Когда</th><th>Закуп</th></tr>';
     data.eco.forEach((item) => {
       html += '<tr><td><b>' + esc(item.name) + '</b></td><td>' + esc(item.when) + '</td><td>' + esc(item.what) + '</td></tr>';
     });
@@ -338,7 +371,7 @@
     if (!player) { location.hash = "#/"; return; }
     const playerIndex = data.players.indexOf(player);
     let html = '<a class="back" href="#/">← Вернуться к штабу</a>';
-    html += '<section class="hero phead" style="--pc:' + safeColor(player.color) + '"><span class="pnum">' + (playerIndex + 1) + '</span><div><p class="eyebrow">PLAYER FILE / ' + String(playerIndex + 1).padStart(2, "0") + '</p><h1 class="ed" data-path="players.' + playerIndex + '.nick">' + esc(player.nick) + '</h1><p class="ed" data-path="players.' + playerIndex + '.role">' + esc(player.role) + '</p></div></section>';
+    html += '<section class="hero phead" style="--pc:' + safeColor(player.color) + '"><span class="pnum">' + (playerIndex + 1) + '</span><div><p class="eyebrow">Карточка игрока №' + (playerIndex + 1) + '</p><h1 class="ed" data-path="players.' + playerIndex + '.nick">' + esc(player.nick) + '</h1><p class="ed" data-path="players.' + playerIndex + '.role">' + esc(player.role) + '</p></div></section>';
     html += '<div class="sidetabs">' + sideTab("T") + sideTab("CT") + '</div>';
 
     html += '<section class="card"><h2>Постоянные задачи</h2><ul class="tasklist">';
@@ -353,7 +386,7 @@
       const position = map.sides[ui.side].defaults.find((item) => item.player === player.id);
       if (!position) return;
       const positionIndex = map.sides[ui.side].defaults.indexOf(position);
-      html += '<div class="minimap"><h3>' + esc(map.name) + '</h3>' + mapSVG(mapId, {
+      html += '<div class="minimap"><h3>' + esc(map.name) + '</h3>' + mapFrame(mapId, {
         markers: markersFor(mapId, ui.side),
         side: ui.side,
         focus: player.id,
@@ -382,7 +415,7 @@
       const to = zoneById(map, record.nade.to);
       if (!from || !to) return;
       html += '<details class="nade"><summary><span>' + (NADE_ICON[record.nade.type] || "•") + '</span><b>' + esc(record.nade.name) + '</b><span class="tag">' + esc(map.name) + ' · ' + record.side + '</span></summary>';
-      html += mapSVG(record.mapId, { arrows: [{ fx: from.x, fy: from.y, tx: to.x, ty: to.y, type: record.nade.type }] });
+      html += mapFrame(record.mapId, { arrows: [{ fx: from.x, fy: from.y, tx: to.x, ty: to.y, type: record.nade.type }] });
       html += '<ol>' + record.nade.steps.map((step, index) => '<li class="ed" data-path="maps.' + record.mapId + '.sides.' + record.side + '.nades.' + nadeIndex + '.steps.' + index + '">' + esc(step) + '</li>').join("") + '</ol>';
       html += '<p class="note"><b>Задача:</b> <span class="ed" data-path="maps.' + record.mapId + '.sides.' + record.side + '.nades.' + nadeIndex + '.note">' + esc(record.nade.note) + '</span></p></details>';
     });
@@ -396,6 +429,7 @@
 
     view.innerHTML = html;
     bindSideTabs();
+    bindMapImages();
     applyEdit();
   }
 
@@ -406,16 +440,16 @@
 
   function boardToolbar(sideData) {
     const tools = [
-      ["select", "Курсор"],
-      ["arrow", "Стрелка"],
-      ["line", "Линия"],
-      ["pen", "Карандаш"],
-      ["number", "Метка №"],
-      ["text", "Текст / ник"],
+      ["select", "Выбор"],
+      ["arrow", "→ Стрелка"],
+      ["line", "— Линия"],
+      ["pen", "✎ От руки"],
+      ["number", "① Номер"],
+      ["text", "Текст"],
     ];
     const selectedDrawing = drawingsFor(ui.map, ui.side).find((drawing) => drawing.id === ui.selected);
     const canEditText = selectedDrawing && (selectedDrawing.type === "text" || selectedDrawing.type === "number");
-    let html = '<div class="board-tools"><div class="tool-row"><div class="tool-block"><span class="tool-label">Инструмент</span>';
+    let html = '<div class="board-tools"><div class="tool-row"><div class="tool-block"><span class="tool-label">Рисование</span>';
     tools.forEach((tool) => {
       html += '<button class="tool-btn ' + (ui.drawTool === tool[0] ? "on" : "") + '" data-tool="' + tool[0] + '" type="button">' + tool[1] + '</button>';
     });
@@ -423,13 +457,13 @@
     COLORS.forEach((color) => {
       html += '<button class="color-btn ' + (ui.drawColor === color ? "on" : "") + '" data-color="' + color + '" style="--swatch:' + color + '" title="Цвет линии" type="button"></button>';
     });
-    html += '</div><div class="tool-block"><span class="tool-label">Объект</span>' +
-      '<button class="tool-btn" data-action="marker-style" type="button">Игроки: ' + (sideData.markerStyle === "nick" ? "НИКИ" : "НОМЕРА") + '</button>' +
-      '<button class="tool-btn" data-action="rename" type="button" ' + (canEditText ? "" : "disabled") + '>Изменить</button>' +
+    html += '</div><div class="tool-block"><span class="tool-label">Управление</span>' +
+      '<button class="tool-btn" data-action="marker-style" type="button">Игроки: ' + (sideData.markerStyle === "nick" ? "ники" : "номера") + '</button>' +
+      '<button class="tool-btn" data-action="rename" type="button" ' + (canEditText ? "" : "disabled") + '>Переименовать</button>' +
       '<button class="tool-btn" data-action="delete" type="button" ' + (ui.selected ? "" : "disabled") + '>Удалить</button>' +
-      '<button class="tool-btn" data-action="undo" type="button" ' + (sideData.drawings.length ? "" : "disabled") + '>Отменить</button>' +
+      '<button class="tool-btn" data-action="undo" type="button" ' + (sideData.drawings.length ? "" : "disabled") + '>Шаг назад</button>' +
       '<button class="tool-btn" data-action="clear" type="button" ' + (sideData.drawings.length ? "" : "disabled") + '>Очистить</button></div></div>' +
-      '<div class="tool-help">Рисуйте прямо поверх карты. Для перемещения объекта выберите «Курсор». Позиции игроков также перетаскиваются.</div></div>';
+      '<div class="tool-help">Выберите инструмент и проведите пальцем или мышью по карте. В режиме «Выбор» можно двигать игроков и готовые пометки.</div></div>';
     return html;
   }
 
@@ -438,15 +472,15 @@
     const view = $("#view");
     if (!map) { location.hash = "#/"; return; }
     const sideData = map.sides[ui.side];
-    let html = '<a class="back" href="#/">← Все карты</a>';
-    html += '<section class="map-page-head"><div><p class="eyebrow">MAP CONTROL / ' + ui.side + ' SIDE</p><h1>' + esc(map.name) + '</h1><p>Позиции · маршруты · исполнение</p></div><div class="map-status"><span>SIDE · ' + ui.side + '</span><span>' + sideData.drawings.length + ' OVERLAYS</span></div></section>';
+    let html = '<a class="back" href="#/">← На главную</a>';
+    html += '<section class="map-page-head"><div><p class="eyebrow">Тактическая карта</p><h1>' + esc(map.name) + '</h1><p>' + (ui.side === "T" ? "Атака: позиции, маршруты и план выхода" : "Защита: позиции, ротации и план удержания") + '</p></div><div class="map-status"><span>Сторона ' + ui.side + '</span><span>Пометок: ' + sideData.drawings.length + '</span></div></section>';
     html += '<div class="sidetabs">' + sideTab("T") + sideTab("CT") + '</div>';
     html += '<div class="tabs">' + tabButton("board", "Тактическая доска") + tabButton("nades", "Гранаты") + tabButton("calls", "Колл-ауты") + tabButton("plan", "План") + '</div>';
 
     if (ui.tab === "board") {
-      html += '<section class="card board-shell"><div class="board-bar"><span class="board-title">TACTICAL BOARD / ' + esc(map.name.toUpperCase()) + '</span><span class="board-mode">' + (editMode ? "EDIT ACCESS" : "VIEW ONLY") + '</span></div>';
+      html += '<section class="card board-shell"><div class="board-bar"><span class="board-title">Схема команды · ' + esc(map.name) + '</span><span class="board-mode">' + (editMode ? "Можно редактировать" : "Только просмотр") + '</span></div>';
       if (editMode) html += boardToolbar(sideData);
-      html += '<div class="map-wrap">' + mapSVG(ui.map, {
+      html += '<div class="map-wrap">' + mapFrame(ui.map, {
         markers: markersFor(ui.map, ui.side),
         drawings: drawingsFor(ui.map, ui.side),
         selected: ui.selected,
@@ -454,7 +488,7 @@
         labelStyle: sideData.markerStyle,
         editor: editMode,
       }) + '</div>';
-      html += '<div class="board-footer"><p class="board-hint"><b>' + (editMode ? "РЕДАКТИРОВАНИЕ:" : "ПРОСМОТР:") + '</b> ' + (editMode ? "перемещайте игроков, добавляйте номера, ники, линии, стрелки и свободные пометки." : "тактические пометки капитана отображаются поверх официального радара карты.") + '</p><div class="position-grid">';
+      html += '<div class="board-footer"><p class="board-hint"><b>' + (editMode ? "Режим капитана:" : "Режим просмотра:") + '</b> ' + (editMode ? "перемещайте игроков, добавляйте номера, ники, линии, стрелки и свободные пометки." : "здесь отображаются позиции и все пометки капитана поверх изображения карты.") + '</p><div class="position-grid">';
       sideData.defaults.forEach((position, index) => {
         const player = playerById(position.player);
         const zone = zoneById(map, position.zone);
@@ -471,7 +505,7 @@
         const to = zoneById(map, nade.to);
         if (!from || !to) return;
         html += '<details class="nade" data-nade="' + index + '" ' + (ui.nade === index ? "open" : "") + '><summary><span>' + (NADE_ICON[nade.type] || "•") + '</span><b class="ed" data-path="maps.' + ui.map + '.sides.' + ui.side + '.nades.' + index + '.name">' + esc(nade.name) + '</b><span class="tag">' + esc(NADE_NAME[nade.type] || nade.type) + (nade.by ? " · " + esc((playerById(nade.by) || {}).nick || "") : "") + '</span>' + (editMode ? '<button class="del" data-del-nade="' + index + '" type="button">Удалить</button>' : "") + '</summary>';
-        html += mapSVG(ui.map, { arrows: [{ fx: from.x, fy: from.y, tx: to.x, ty: to.y, type: nade.type }] });
+        html += mapFrame(ui.map, { arrows: [{ fx: from.x, fy: from.y, tx: to.x, ty: to.y, type: nade.type }] });
         html += '<ol>' + nade.steps.map((step, stepIndex) => '<li class="ed" data-path="maps.' + ui.map + '.sides.' + ui.side + '.nades.' + index + '.steps.' + stepIndex + '">' + esc(step) + '</li>').join("") + '</ol>';
         html += '<p class="note"><b>Задача:</b> <span class="ed" data-path="maps.' + ui.map + '.sides.' + ui.side + '.nades.' + index + '.note">' + esc(nade.note) + '</span></p></details>';
       });
@@ -479,7 +513,7 @@
     }
 
     if (ui.tab === "calls") {
-      html += '<section class="card"><h2>Колл-ауты</h2><p class="muted">Выберите обозначенную зону на радаре.</p>' + mapSVG(ui.map, { zones: true, highlightZone: ui.zone }) + '<div id="zoneInfo">' + (ui.zone ? zoneCard(zoneById(map, ui.zone)) : '<p class="muted">Зона не выбрана.</p>') + '</div></section>';
+      html += '<section class="card"><h2>Колл-ауты</h2><p class="muted">Нажмите на обозначенную зону карты.</p>' + mapFrame(ui.map, { zones: true, highlightZone: ui.zone }) + '<div id="zoneInfo">' + (ui.zone ? zoneCard(zoneById(map, ui.zone)) : '<p class="muted">Зона не выбрана.</p>') + '</div></section>';
     }
 
     if (ui.tab === "plan") {
@@ -522,6 +556,7 @@
       bindBoardToolbar();
       bindBoardEditor(radar);
     }
+    bindMapImages();
     applyEdit();
   }
 
@@ -609,12 +644,11 @@
     }
     if (action === "rename" && index >= 0) {
       const drawing = drawings[index];
-      const message = drawing.type === "number" ? "Введите номер метки (1–99)" : "Введите ник или подпись";
-      const value = prompt(message, drawing.text || "");
-      if (value == null || !value.trim()) return;
-      drawing.text = drawing.type === "number" ? value.trim().slice(0, 3) : value.trim().slice(0, 24);
-      save();
-      renderMapPage();
+      requestBoardText(drawing.type, drawing.text || "", (value) => {
+        drawing.text = value;
+        save();
+        renderMapPage();
+      });
       return;
     }
     if (action === "undo" && drawings.length) {
@@ -630,6 +664,30 @@
       save();
       renderMapPage();
     }
+  }
+
+  function requestBoardText(type, initialValue, onSave) {
+    const isNumber = type === "number";
+    closeModal();
+    const html = '<div class="modal" id="modal"><div class="modal-in narrow"><p class="modal-kicker">Пометка на карте</p><h3>' + (isNumber ? "Номер в обводке" : "Текст или ник") + '</h3><p class="muted">' + (isNumber ? "Введите число от 1 до 99." : "Введите короткую подпись, которая будет видна поверх карты.") + '</p><form id="boardTextForm"><label class="field"><span>' + (isNumber ? "Номер" : "Подпись") + '</span><input id="boardTextInput" ' + (isNumber ? 'inputmode="numeric" maxlength="2"' : 'maxlength="24"') + ' value="' + attr(initialValue) + '" required></label><div class="form-error" id="boardTextError"></div><div class="row"><button class="btn" type="submit">Сохранить</button><button class="btn ghost" id="mClose" type="button">Отмена</button></div></form></div></div>';
+    document.body.insertAdjacentHTML("beforeend", html);
+    const input = $("#boardTextInput");
+    input.focus();
+    input.select();
+    $("#mClose").onclick = closeModal;
+    $("#modal").onclick = (event) => { if (event.target.id === "modal") closeModal(); };
+    $("#boardTextForm").onsubmit = (event) => {
+      event.preventDefault();
+      let value = input.value.trim();
+      if (isNumber) value = value.replace(/\D/g, "").slice(0, 2);
+      else value = value.slice(0, 24);
+      if (!value || (isNumber && (Number(value) < 1 || Number(value) > 99))) {
+        $("#boardTextError").textContent = isNumber ? "Нужно число от 1 до 99." : "Введите подпись.";
+        return;
+      }
+      closeModal();
+      onSave(value);
+    };
   }
 
   function bindBoardEditor(svg) {
@@ -656,21 +714,21 @@
 
       if (ui.drawTool === "number" || ui.drawTool === "text") {
         event.preventDefault();
-        const question = ui.drawTool === "number" ? "Номер метки (1–99)" : "Ник или короткая подпись";
-        const answer = prompt(question, ui.drawTool === "number" ? "1" : "");
-        if (answer == null || !answer.trim()) return;
-        const drawing = {
-          id: newDrawingId(),
-          type: ui.drawTool,
-          x: Math.round(point.x * 10) / 10,
-          y: Math.round(point.y * 10) / 10,
-          text: ui.drawTool === "number" ? answer.trim().slice(0, 3) : answer.trim().slice(0, 24),
-          color: ui.drawColor,
-        };
-        drawingsFor(ui.map, ui.side).push(drawing);
-        ui.selected = drawing.id;
-        save();
-        renderMapPage();
+        const drawingType = ui.drawTool;
+        requestBoardText(drawingType, drawingType === "number" ? "1" : "", (value) => {
+          const drawing = {
+            id: newDrawingId(),
+            type: drawingType,
+            x: round1(point.x),
+            y: round1(point.y),
+            text: value,
+            color: ui.drawColor,
+          };
+          drawingsFor(ui.map, ui.side).push(drawing);
+          ui.selected = drawing.id;
+          save();
+          renderMapPage();
+        });
         return;
       }
 
@@ -844,8 +902,8 @@
   /* ---------- bomb timer ---------- */
   function renderBombPage() {
     const view = $("#view");
-    view.innerHTML = '<a class="back" href="#/">← Вернуться к штабу</a><section class="hero"><p class="eyebrow">Utility / Optional</p><h1>Bomb timer</h1><p>Отдельный спокойный таймер после установки бомбы.</p></section>' +
-      '<section class="card bomb-card"><div class="bomb-label">C4 · 40 SECONDS</div><div class="tdisp" id="tdisp">' + formatTime(timerLeft) + '</div><div class="tbtns"><button class="btn big" id="bombStart" type="button">Старт · 40 сек</button><button class="btn ghost big" id="bombStop" type="button">Сбросить</button></div><p class="timer-note">Последние пять секунд: короткий звук и вибрация. Таймер не запускается автоматически.</p></section>';
+    view.innerHTML = '<a class="back" href="#/">← Вернуться к штабу</a><section class="hero"><p class="eyebrow">Отдельный инструмент</p><h1>Таймер бомбы</h1><p>Отдельный спокойный таймер после установки бомбы.</p></section>' +
+      '<section class="card bomb-card"><div class="bomb-label">Бомба установлена · 40 секунд</div><div class="tdisp" id="tdisp">' + formatTime(timerLeft) + '</div><div class="tbtns"><button class="btn big" id="bombStart" type="button">Старт · 40 сек</button><button class="btn ghost big" id="bombStop" type="button">Сбросить</button></div><p class="timer-note">Последние пять секунд: короткий звук и вибрация. Таймер не запускается автоматически.</p></section>';
     $("#bombStart").onclick = () => startBomb(40);
     $("#bombStop").onclick = () => startBomb(0);
     paintTimer();
@@ -939,7 +997,7 @@
     const config = lockConfig();
     const setup = forceSetup || !config;
     closeModal();
-    const html = '<div class="modal" id="modal"><div class="modal-in narrow"><p class="modal-kicker">Restricted access</p><h3>' + (setup ? (forceSetup ? "Новый пароль" : "Установить пароль капитана") : "Вход капитана") + '</h3><p class="muted">' + (setup ? "Пароль будет запрашиваться при каждом новом открытии режима правок на этом устройстве." : "Только после проверки пароля станут доступны изменения и рисование поверх карт.") + '</p><form id="captainForm"><label class="field"><span>Пароль</span><input id="captainPass" type="password" autocomplete="current-password" minlength="4" required></label>' + (setup ? '<label class="field"><span>Повторите пароль</span><input id="captainPass2" type="password" autocomplete="new-password" minlength="4" required></label>' : "") + '<div class="form-error" id="captainError"></div><div class="row"><button class="btn" type="submit">' + (setup ? "Сохранить пароль" : "Разблокировать") + '</button><button class="btn ghost" id="mClose" type="button">Отмена</button></div></form><p class="muted">Пароль хранится локально в виде хеша и не попадает в экспорт плейбука.</p></div></div>';
+    const html = '<div class="modal" id="modal"><div class="modal-in narrow"><p class="modal-kicker">Защищённый доступ</p><h3>' + (setup ? (forceSetup ? "Новый пароль" : "Установить пароль капитана") : "Вход капитана") + '</h3><p class="muted">' + (setup ? "Пароль будет запрашиваться при каждом новом открытии режима правок на этом устройстве." : "Только после проверки пароля станут доступны изменения и рисование поверх карт.") + '</p><form id="captainForm"><label class="field"><span>Пароль</span><input id="captainPass" type="password" autocomplete="current-password" minlength="4" required></label>' + (setup ? '<label class="field"><span>Повторите пароль</span><input id="captainPass2" type="password" autocomplete="new-password" minlength="4" required></label>' : "") + '<div class="form-error" id="captainError"></div><div class="row"><button class="btn" type="submit">' + (setup ? "Сохранить пароль" : "Разблокировать") + '</button><button class="btn ghost" id="mClose" type="button">Отмена</button></div></form><p class="muted">Пароль хранится локально в виде хеша и не попадает в экспорт плейбука.</p></div></div>';
     document.body.insertAdjacentHTML("beforeend", html);
     $("#mClose").onclick = closeModal;
     $("#modal").onclick = (event) => { if (event.target.id === "modal") closeModal(); };
@@ -973,7 +1031,7 @@
     ui.drawTool = "select";
     document.body.classList.toggle("editing", editMode);
     $("#editBtn").classList.toggle("on", editMode);
-    $("#editBtn").textContent = editMode ? "ЗАВЕРШИТЬ" : "КАПИТАН · ВХОД";
+    $("#editBtn").textContent = editMode ? "Закончить правки" : "Режим капитана";
     $("#editPanel").hidden = !editMode;
     render();
   }
@@ -1004,7 +1062,7 @@
   function exportJSON() {
     if (!editMode) return;
     const text = JSON.stringify(data, null, 2);
-    const html = '<div class="modal" id="modal"><div class="modal-in"><p class="modal-kicker">Captain data</p><h3>Экспорт плейбука</h3><p class="muted">Скопируйте JSON. Пароль капитана в экспорт не включается.</p><textarea id="expTa" readonly>' + esc(text) + '</textarea><div class="row"><button class="btn" id="cpBtn" type="button">Скопировать</button><button class="btn ghost" id="mClose" type="button">Закрыть</button></div></div></div>';
+    const html = '<div class="modal" id="modal"><div class="modal-in"><p class="modal-kicker">Данные капитана</p><h3>Экспорт плейбука</h3><p class="muted">Скопируйте JSON. Пароль капитана в экспорт не включается.</p><textarea id="expTa" readonly>' + esc(text) + '</textarea><div class="row"><button class="btn" id="cpBtn" type="button">Скопировать</button><button class="btn ghost" id="mClose" type="button">Закрыть</button></div></div></div>';
     document.body.insertAdjacentHTML("beforeend", html);
     $("#cpBtn").onclick = async () => {
       const textarea = $("#expTa");
@@ -1016,7 +1074,7 @@
 
   function importJSON() {
     if (!editMode) return;
-    const html = '<div class="modal" id="modal"><div class="modal-in"><p class="modal-kicker">Captain data</p><h3>Импорт плейбука</h3><p class="muted">Вставьте JSON плейбука. Текущие позиции и рисунки будут заменены.</p><textarea id="impTa" placeholder="{ ... }"></textarea><div class="form-error" id="importError"></div><div class="row"><button class="btn" id="doImp" type="button">Загрузить</button><button class="btn ghost" id="mClose" type="button">Закрыть</button></div></div></div>';
+    const html = '<div class="modal" id="modal"><div class="modal-in"><p class="modal-kicker">Данные капитана</p><h3>Импорт плейбука</h3><p class="muted">Вставьте JSON плейбука. Текущие позиции и рисунки будут заменены.</p><textarea id="impTa" placeholder="{ ... }"></textarea><div class="form-error" id="importError"></div><div class="row"><button class="btn" id="doImp" type="button">Загрузить</button><button class="btn ghost" id="mClose" type="button">Закрыть</button></div></div></div>';
     document.body.insertAdjacentHTML("beforeend", html);
     $("#doImp").onclick = () => {
       try {
@@ -1065,14 +1123,17 @@
     if (passwordButton) passwordButton.onclick = () => { if (editMode) openCaptainGate(true); };
     if (resetButton) resetButton.onclick = resetData;
     window.addEventListener("hashchange", route);
-    if ("serviceWorker" in navigator) {
-      let refreshing = false;
-      navigator.serviceWorker.addEventListener("controllerchange", () => {
-        if (refreshing) return;
-        refreshing = true;
-        location.reload();
-      });
-      navigator.serviceWorker.register("sw.js?v=5").catch(() => {});
+    // Старые версии сайта использовали агрессивный offline-кэш. Удаляем его,
+    // чтобы HTML, скрипты и изображения всегда загружались одной версии.
+    if ("serviceWorker" in navigator && navigator.serviceWorker.getRegistrations) {
+      navigator.serviceWorker.getRegistrations().then((registrations) => {
+        registrations.forEach((registration) => registration.unregister());
+      }).catch(() => {});
+    }
+    if (window.caches && caches.keys) {
+      caches.keys().then((keys) => {
+        keys.filter((key) => key.indexOf("cs2-playbook-") === 0).forEach((key) => caches.delete(key));
+      }).catch(() => {});
     }
     route();
   }
