@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#0e1116">
-  <title>CS2 Плейбук команды</title>
+  <meta name="theme-color" content="#090b0e">
+  <title>CS2 Tactical Playbook</title>
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="assets/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="assets/icon.svg">
@@ -12,21 +12,37 @@
 </head>
 <body>
   <header class="top">
-    <a class="logo" href="#/">🎯 <b>CS2</b>&nbsp;Плейбук</a>
-    <div class="topbtns">
-      <button id="editBtn" class="ibtn" title="Режим капитана: править ники, позиции, гранаты">✏️</button>
+    <a class="logo" href="#/" aria-label="На главную">
+      <span class="logo-mark">CS2</span>
+      <span class="logo-name">TACTICAL PLAYBOOK</span>
+    </a>
+    <div class="top-actions">
+      <a class="top-link" href="#/bomb" title="Таймер установленной бомбы">BOMB · 40S</a>
+      <button id="editBtn" class="captain-btn" type="button" aria-label="Войти в режим капитана">КАПИТАН · ВХОД</button>
     </div>
   </header>
-  <div id="editPanel" class="editpanel" hidden>
-    <span>Режим капитана: текст правится тапом, маркеры игроков перетаскиваются на схеме.</span>
-    <div class="row">
-      <button class="btn tiny" id="expBtn">Экспорт</button>
-      <button class="btn tiny ghost" id="impBtn">Импорт</button>
-      <button class="btn tiny ghost" id="rstBtn">Сброс</button>
+
+  <aside id="editPanel" class="editpanel" hidden>
+    <div class="editpanel-inner">
+      <div class="captain-state"><span class="status-dot"></span><b>CAPTAIN MODE</b><span>Редактирование разблокировано</span></div>
+      <div class="panel-actions">
+        <button class="panel-btn" id="expBtn" type="button">ЭКСПОРТ</button>
+        <button class="panel-btn" id="impBtn" type="button">ИМПОРТ</button>
+        <button class="panel-btn" id="passBtn" type="button">СМЕНИТЬ ПАРОЛЬ</button>
+        <button class="panel-btn danger" id="rstBtn" type="button">СБРОСИТЬ ДАННЫЕ</button>
+      </div>
     </div>
-  </div>
+  </aside>
+
   <main id="view"></main>
-  <footer class="foot">Плейбук хранится на телефоне · офлайн работает · сделано для турнира</footer>
+
+  <footer class="foot">
+    <span>CS2 TACTICAL PLAYBOOK</span>
+    <span>ДАННЫЕ ХРАНЯТСЯ ЛОКАЛЬНО · OFFLINE READY</span>
+  </footer>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
   <script src="data.js"></script>
   <script src="app.js"></script>
 </body>

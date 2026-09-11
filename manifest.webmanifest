@@ -1,10 +1,10 @@
 {
-  "name": "CS2 Плейбук команды",
-  "short_name": "CS2 Плейбук",
+  "name": "CS2 Tactical Playbook",
+  "short_name": "CS2 Playbook",
   "start_url": "./",
   "display": "standalone",
-  "background_color": "#0e1116",
-  "theme_color": "#0e1116",
+  "background_color": "#090b0e",
+  "theme_color": "#090b0e",
   "lang": "ru",
   "icons": [
     { "src": "assets/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
