@@ -9,6 +9,9 @@
   "use strict";
 
   const TABLES = ["players", "maps", "tactics", "materials", "templates", "activity"];
+  // Таблицы с ручным порядком: новую строку всегда ставим в конец списка,
+  // иначе у капитана и у игроков список отсортируется по-разному.
+  const POS_TABLES = ["players", "maps", "tactics", "materials"];
   const LS_DB = "cs2db-v2";
   const LS_SESS = "cs2sess-v2";
   const LS_PREF = "cs2pref-v2";
@@ -64,6 +67,22 @@
   }
   function normName(name) {
     return String(name || "").trim().replace(/\s+/g, " ");
+  }
+  /* Роль из JWT-подписи ключа. anon public key безопасен, service_role — нет. */
+  function jwtRole(key) {
+    try {
+      const part = String(key || "").split(".")[1];
+      if (!part) return "";
+      let base64 = part.replace(/-/g, "+").replace(/_/g, "/");
+      if (base64.length % 4) base64 += "=".repeat(4 - (base64.length % 4));
+      const json = b64Decode(base64);
+      return JSON.parse(json).role || "";
+    } catch (e) { return ""; }
+  }
+  function b64Decode(base64) {
+    if (HAS_WINDOW && typeof window.atob === "function") return window.atob(base64);
+    if (typeof atob === "function") return atob(base64);
+    return Buffer.from(base64, "base64").toString("binary");
   }
 
   /* ================= LocalAdapter ================= */
@@ -183,6 +202,7 @@
     if (!row) {
       const maxPos = rows.reduce((m, r) => Math.max(m, r.pos || 0), 0);
       row = Object.assign({ id: uid(table.slice(0, 2)), team_id: teamId, pos: maxPos + 1 }, clone(obj));
+      if (POS_TABLES.indexOf(table) >= 0) row.pos = maxPos + 1;
       rows.push(row);
     } else {
       Object.keys(obj).forEach((k) => { if (k !== "id" && k !== "team_id") row[k] = clone(obj[k]); });
@@ -343,13 +363,21 @@
     if (error) return null;
     return data;
   };
+  SupabaseAdapter.prototype.nextPos = async function (table, teamId) {
+    const { data } = await this.client.from(table).select("pos").eq("team_id", teamId).order("pos", { ascending: false }).limit(1);
+    return (((data && data[0]) || {}).pos || 0) + 1;
+  };
   SupabaseAdapter.prototype.save = async function (table, teamId, obj) {
     const row = clone(obj);
     delete row.id;
     row.team_id = teamId;
     let res;
     if (obj.id) res = await this.client.from(table).update(row).eq("id", obj.id).eq("team_id", teamId).select().single();
-    else res = await this.client.from(table).insert(row).select().single();
+    else {
+      // pos считает сервер-клиент: в таблицах с ручным порядком новая строка идёт в конец.
+      if (POS_TABLES.indexOf(table) >= 0) row.pos = await this.nextPos(table, teamId);
+      res = await this.client.from(table).insert(row).select().single();
+    }
     if (res.error) rpcErr(res.error);
     this.emit({ type: "data", table, origin: "local", id: res.data.id });
     return res.data;
@@ -411,19 +439,32 @@
     isCaptain() { return this.role === "captain"; },
 
     cloudConfig() {
+      let cfg = null;
       if (HAS_WINDOW && window.SUPABASE_CONFIG && window.SUPABASE_CONFIG.url && window.SUPABASE_CONFIG.anonKey &&
-          window.SUPABASE_CONFIG.url.indexOf("xxxx") < 0) return window.SUPABASE_CONFIG;
-      const override = readJSON(LS_CFG, null);
-      if (override && override.url && override.anonKey) return override;
-      return null;
+          window.SUPABASE_CONFIG.url.indexOf("xxxx") < 0) cfg = window.SUPABASE_CONFIG;
+      if (!cfg) {
+        const override = readJSON(LS_CFG, null);
+        if (override && override.url && override.anonKey) cfg = override;
+      }
+      if (cfg && this.keyRole(cfg.anonKey) === "service_role") {
+        // Секретный ключ обходит RLS: с ним любой посетитель сайта получил бы доступ ко всем командам.
+        return Object.assign({}, cfg, { unsafe: true });
+      }
+      return cfg;
     },
+    keyRole(key) { return jwtRole(key); },
     setCloudOverride(cfg) { writeJSON(LS_CFG, cfg); },
     clearCloudOverride() { if (HAS_LS) { try { localStorage.removeItem(LS_CFG); } catch (e) {} } },
 
     async init() {
       const local = new LocalAdapter();
       const cfg = this.cloudConfig();
-      if (cfg && HAS_WINDOW) {
+      if (cfg && cfg.unsafe) {
+        // Отказываемся подключаться: секретный ключ открыл бы чужие команды всем посетителям.
+        this.adapter = local;
+        this.cloudTried = true;
+        this.emit({ type: "status", cloudError: "В конфигурации service_role key. Нужен anon public key (Settings → API)." });
+      } else if (cfg && HAS_WINDOW) {
         try {
           const cloud = new SupabaseAdapter(cfg);
           await cloud.init();
@@ -594,6 +635,117 @@
       p.favs[this.team.id] = list.slice(0, 60);
       writeJSON(LS_PREF, p);
       this.emit({ type: "favs" });
+    },
+
+    /* --- самопроверка облака: что подключено, а что нет --- */
+    async diagnose() {
+      const out = [];
+      const add = (name, ok, detail, fix) => out.push({ name, ok, detail: detail || "", fix: fix || "" });
+      const cfg = this.cloudConfig();
+      if (!cfg) {
+        add("Ключи проекта", false, "не найдены — сайт работает локально",
+          "Скопируйте supabase-config.example.js в supabase-config.js и вставьте Project URL и anon key (SETUP.md, шаг 4).");
+        return out;
+      }
+      if (cfg.unsafe) {
+        add("Ключи проекта", false, "вставлен service_role key — это секрет",
+          "Нужен anon public key: Supabase → Settings → API → Project API keys → anon public. Service_role обходит RLS и открыл бы данные команды всем посетителям сайта.");
+        return out;
+      }
+      add("Ключи проекта", true, cfg.url);
+      if (!HAS_WINDOW || !window.supabase) {
+        add("Библиотека supabase-js", false, "не загрузилась с CDN", "Проверьте интернет и блокировщики, затем перезагрузите страницу.");
+        return out;
+      }
+      const client = this.adapter && this.adapter.client;
+      if (this.mode() !== "cloud" || !client) {
+        add("Подключение к базе", false, "облачный режим не включился",
+          "Проверьте URL и anon key. Частая причина — выключенный Anonymous sign-ins в Supabase.");
+        return out;
+      }
+      add("Подключение к базе", true, "облачный режим активен");
+
+      try {
+        const { data } = await client.auth.getSession();
+        const sess = data && data.session;
+        add("Анонимный вход", !!sess, sess ? "сессия устройства активна" : "сессии нет",
+          sess ? "" : "Supabase → Authentication → Sign In / Up → включите Allow anonymous sign-ins.");
+      } catch (e) {
+        add("Анонимный вход", false, (e && e.message) || "ошибка",
+          "Включите Allow anonymous sign-ins в Supabase.");
+      }
+
+      const missing = [];
+      for (const t of TABLES) {
+        try {
+          const { error } = await client.from(t).select("id").limit(1);
+          if (error) missing.push(t);
+        } catch (e) { missing.push(t); }
+      }
+      add("Таблицы базы", missing.length === 0,
+        missing.length ? "нет доступа: " + missing.join(", ") : "все " + TABLES.length + " на месте",
+        missing.length ? "Примените supabase-schema.sql: SQL Editor → New query → вставить целиком → Run (SETUP.md, шаг 3)." : "");
+
+      try {
+        const { error } = await client.rpc("team_login", { p_name: "__check__" + Date.now(), p_pin: "0000" });
+        const msg = (error && error.message) || "";
+        const exists = msg.indexOf("NO_TEAM") >= 0;
+        add("Серверная проверка PIN", exists, exists ? "функция team_login отвечает" : (msg || "нет ответа"),
+          exists ? "" : "Примените supabase-schema.sql целиком — в нём серверные функции входа.");
+      } catch (e) {
+        add("Серверная проверка PIN", false, (e && e.message) || "", "Примените supabase-schema.sql целиком.");
+      }
+
+      try {
+        const { error } = await client.storage.from("team-files").list("", { limit: 1 });
+        const notFound = error && /not_?found/i.test(error.message || "");
+        add("Хранилище файлов", !notFound,
+          notFound ? "корзина team-files не создана" : (error ? "доступ ограничен RLS — это нормально" : "корзина на месте"),
+          notFound ? "Примените supabase-schema.sql целиком — он создаёт корзину team-files." : "");
+      } catch (e) {
+        add("Хранилище файлов", false, (e && e.message) || "", "");
+      }
+
+      const status = await new Promise((resolve) => {
+        let done = false;
+        const fin = (s) => { if (!done) { done = true; resolve(s); } };
+        let ch = null;
+        try {
+          ch = client.channel("check:" + Date.now());
+          const timer = setTimeout(() => fin("TIMEOUT"), 6000);
+          ch.subscribe((s) => {
+            if (s === "SUBSCRIBED" || s === "CHANNEL_ERROR" || s === "TIMED_OUT") { clearTimeout(timer); fin(s); }
+          });
+        } catch (e) { fin("ERROR"); return; }
+        setTimeout(() => { try { client.removeChannel(ch); } catch (e) {} }, 8000);
+      });
+      add("Живые обновления (Realtime)", status === "SUBSCRIBED",
+        status === "SUBSCRIBED" ? "канал подписан" : "статус: " + status,
+        status === "SUBSCRIBED" ? "" : "Проверьте, что проект не на паузе; таблицы должны быть в публикации supabase_realtime (это делает supabase-schema.sql).");
+
+      if (!this.team) {
+        add("Вход в команду", false, "устройство ещё не вошло в команду",
+          "Войдите названием команды и PIN — после этого правки начнут синхронизироваться.");
+        return out;
+      }
+      try {
+        await this.refresh("tactics");
+        add("Чтение данных команды", true, "прочитано тактик: " + (this.cache.tactics || []).length);
+      } catch (e) {
+        add("Чтение данных команды", false, (e && e.message) || "", "Проверьте, что вошли в команду уже после применения схемы.");
+      }
+      if (this.isCaptain()) {
+        try {
+          await this.adapter.log(this.team.id, "проверка связи", "проверка связи: правки синхронизируются", null);
+          add("Запись правок", true, "тестовая запись ушла в журнал команды");
+        } catch (e) {
+          add("Запись правок", false, (e && e.message) || "",
+            "Проверьте, что PIN капитана введён: Управление → «Ввести PIN капитана».");
+        }
+      } else {
+        add("Права на запись", true, "вы вошли как игрок: пишет капитан, вам правки приходят сами");
+      }
+      return out;
     },
 
     /* --- поиск по кэшу --- */

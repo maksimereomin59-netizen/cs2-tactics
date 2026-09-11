@@ -1,0 +1,16 @@
+{
+  "name": "cs2-playbook-tests",
+  "private": true,
+  "type": "module",
+  "description": "Проверки схемы Supabase, слоя синхронизации и интерфейса плейбука",
+  "scripts": {
+    "schema": "node test.mjs",
+    "client": "node test-client.mjs",
+    "ui": "node test-ui.mjs",
+    "all": "node test.mjs && node test-client.mjs && node test-ui.mjs"
+  },
+  "devDependencies": {
+    "@electric-sql/pglite": "^0.3.18",
+    "jsdom": "^27.0.0"
+  }
+}

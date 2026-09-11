@@ -2011,7 +2011,8 @@
         ? '<p class="muted tiny">Синхронизация включена. Правки капитана прилетают игрокам сами.</p>'
         : '<p class="muted tiny">Облако не подключено: каждый видит только своё устройство. Подключите Supabase по инструкции SETUP.md ' +
           "(файл supabase-config.js), либо введите ключи ниже для проверки на этом устройстве.</p>") +
-      '<div class="btnrow"><button class="btn ghost tiny" data-cloud type="button">' + (cloud ? "Проверить / сменить ключи" : "Подключить облако") + "</button></div></div></div>";
+      '<div class="btnrow"><button class="btn ghost tiny" data-cloud type="button">' + (cloud ? "Проверить / сменить ключи" : "Подключить облако") + "</button>" +
+      '<button class="btn ghost tiny" data-cloudcheck type="button">Проверить связь</button></div></div></div>';
 
     // Журнал
     html += '<div class="sec"><div class="sec-head"><h2>Журнал изменений</h2></div><div class="sec-body">';
@@ -2019,6 +2020,13 @@
     if (!feed.length) html += '<div class="empty">Пока тихо.</div>';
     feed.forEach((a) => { html += activityRowHTML(a); });
     html += "</div></div>";
+
+    // Данные команды: резервная копия и перенос между проектами
+    html += '<div class="sec"><div class="sec-head"><h2>Данные команды</h2></div><div class="sec-pad">' +
+      '<p class="muted tiny">Резервная копия: файл со всеми картами, тактиками, составом и материалами. PIN в файл не попадают.</p>' +
+      '<div class="btnrow"><button class="btn ghost tiny" data-export type="button">Экспорт в файл</button>' +
+      '<button class="btn ghost tiny" data-import type="button">Загрузить из файла</button></div>' +
+      '<input type="file" accept="application/json,.json" hidden data-impfile></div></div>';
 
     // Опасная зона
     html += '<div class="sec"><div class="sec-head"><h2>Опасная зона</h2></div><div class="sec-pad"><div class="btnrow" style="margin-top:0">' +
@@ -2045,6 +2053,7 @@
       b.onclick = (e) => { e.stopPropagation(); templateMenu(b, b.dataset.tplmenu); };
     });
     $("[data-cloud]", view).onclick = sheetCloud;
+    $("[data-cloudcheck]", view).onclick = sheetCloudCheck;
     $("[data-export]", view).onclick = exportTeam;
     $("[data-import]", view).onclick = () => $("[data-impfile]", view).click();
     $("[data-impfile]", view).onchange = (e) => {
@@ -2152,7 +2161,8 @@
       '<p class="muted tiny">Постоянное подключение — файл supabase-config.js в репозитории (см. SETUP.md). ' +
       "Здесь можно ввести ключи временно, для проверки на этом устройстве.</p>" +
       fld("Project URL", '<input id="clUrl" maxlength="120" value="' + esc((cfg && cfg.url) || "") + '" placeholder="https://xxxx.supabase.co">') +
-      fld("Anon key", '<input id="clKey" maxlength="500" value="' + esc((cfg && cfg.anonKey) || "") + '" placeholder="eyJ…">'),
+      fld("Anon key", '<input id="clKey" maxlength="500" value="' + esc((cfg && cfg.anonKey) || "") + '" placeholder="eyJ…">') +
+      '<div class="form-error" id="clErr"></div>',
       '<button class="btn ghost" data-x type="button">Отмена</button>' +
       (cfg ? '<button class="btn danger" data-clr type="button">Сбросить</button>' : "") +
       '<button class="btn" data-ok type="button">Подключить</button>');
@@ -2161,10 +2171,36 @@
     if (clr) clr.onclick = () => { DB.clearCloudOverride(); location.reload(); };
     $("[data-ok]").onclick = () => {
       const url = $("#clUrl").value.trim(), anonKey = $("#clKey").value.trim();
-      if (!url || !anonKey) return;
+      const err = $("#clErr");
+      if (!url || !anonKey) { err.textContent = "Заполните оба поля"; return; }
+      if (DB.keyRole(anonKey) === "service_role") {
+        err.textContent = "Это service_role key — секретный, он обходит защиту базы. Нужен anon public key из Settings → API.";
+        return;
+      }
       DB.setCloudOverride({ url, anonKey });
       location.reload();
     };
+  }
+
+  /* Проверка связи: пошагово показывает, что подключено, а что нет. */
+  async function sheetCloudCheck() {
+    openSheet("Проверка связи", '<div class="loading" style="min-height:120px"><span class="loading-dot"></span>Проверяем…</div>',
+      '<button class="btn ghost" data-x type="button">Закрыть</button>');
+    $("[data-x]").onclick = closeSheet;
+    let rows = [];
+    try { rows = await DB.diagnose(); }
+    catch (e) { rows = [{ name: "Проверка", ok: false, detail: (e && e.message) || "сбой", fix: "Обновите страницу и попробуйте снова." }]; }
+    const box = $("#sheetRoot .sheet-body");
+    if (!box) return; // шторку закрыли, пока шла проверка
+    const bad = rows.filter((r) => !r.ok).length;
+    box.innerHTML = rows.map((r) =>
+      '<div class="row" style="cursor:default"><span class="row-main"><b>' + (r.ok ? "✓ " : "✕ ") + esc(r.name) + "</b>" +
+      (r.detail ? "<small>" + esc(r.detail) + "</small>" : "") + "</span></div>" +
+      (!r.ok && r.fix ? '<p class="muted tiny" style="margin:2px 0 10px">' + esc(r.fix) + "</p>" : "")
+    ).join("") +
+      '<p class="muted tiny" style="margin:12px 0">' + (bad
+        ? "Не всё гладко: пункты с ✕ нужно исправить — под каждым написано что делать."
+        : "Всё подключено: правки капитана прилетают игрокам сами, без перезагрузки.") + "</p>";
   }
 
   /* ---------- export / import ---------- */
