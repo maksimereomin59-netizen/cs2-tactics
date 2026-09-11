@@ -1044,20 +1044,36 @@
   }
 
   function boot() {
-    $("#editBtn").onclick = () => {
-      if (editMode) {
-        setEdit(false);
-        toast("Режим капитана закрыт");
-      } else {
-        openCaptainGate(false);
-      }
-    };
-    $("#expBtn").onclick = exportJSON;
-    $("#impBtn").onclick = importJSON;
-    $("#passBtn").onclick = () => { if (editMode) openCaptainGate(true); };
-    $("#rstBtn").onclick = resetData;
+    const editButton = $("#editBtn");
+    const exportButton = $("#expBtn");
+    const importButton = $("#impBtn");
+    const passwordButton = $("#passBtn");
+    const resetButton = $("#rstBtn");
+
+    if (editButton) {
+      editButton.onclick = () => {
+        if (editMode) {
+          setEdit(false);
+          toast("Режим капитана закрыт");
+        } else {
+          openCaptainGate(false);
+        }
+      };
+    }
+    if (exportButton) exportButton.onclick = exportJSON;
+    if (importButton) importButton.onclick = importJSON;
+    if (passwordButton) passwordButton.onclick = () => { if (editMode) openCaptainGate(true); };
+    if (resetButton) resetButton.onclick = resetData;
     window.addEventListener("hashchange", route);
-    if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
+    if ("serviceWorker" in navigator) {
+      let refreshing = false;
+      navigator.serviceWorker.addEventListener("controllerchange", () => {
+        if (refreshing) return;
+        refreshing = true;
+        location.reload();
+      });
+      navigator.serviceWorker.register("sw.js?v=5").catch(() => {});
+    }
     route();
   }
 

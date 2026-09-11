@@ -1,11 +1,11 @@
 /* Offline cache for the tactical playbook */
-const CACHE = "cs2-playbook-v4";
-const ASSETS = [
+const CACHE = "cs2-playbook-v5";
+const CORE_ASSETS = [
   "./",
   "index.html",
-  "styles.css",
-  "app.js",
-  "data.js",
+  "styles.css?v=5",
+  "app.js?v=5",
+  "data.js?v=5",
   "manifest.webmanifest",
   "assets/icon.svg",
   "assets/maps/mirage.png",
@@ -14,7 +14,11 @@ const ASSETS = [
 ];
 
 self.addEventListener("install", (event) => {
-  event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(ASSETS)).then(() => self.skipWaiting()));
+  event.waitUntil(
+    caches.open(CACHE)
+      .then((cache) => cache.addAll(CORE_ASSETS))
+      .then(() => self.skipWaiting())
+  );
 });
 
 self.addEventListener("activate", (event) => {
@@ -25,15 +29,33 @@ self.addEventListener("activate", (event) => {
   );
 });
 
+async function networkFirst(request) {
+  const cache = await caches.open(CACHE);
+  try {
+    const response = await fetch(request);
+    if (response && response.ok) cache.put(request, response.clone());
+    return response;
+  } catch (error) {
+    return (await cache.match(request)) || (await cache.match("index.html"));
+  }
+}
+
+async function cacheFirst(request) {
+  const cache = await caches.open(CACHE);
+  const cached = await cache.match(request);
+  if (cached) return cached;
+  try {
+    const response = await fetch(request);
+    if (response && response.ok) cache.put(request, response.clone());
+    return response;
+  } catch (error) {
+    return cache.match("index.html");
+  }
+}
+
 self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
-  event.respondWith(
-    caches.match(event.request).then((cached) => cached || fetch(event.request)
-      .then((response) => {
-        const copy = response.clone();
-        caches.open(CACHE).then((cache) => cache.put(event.request, copy));
-        return response;
-      })
-      .catch(() => caches.match("index.html")))
-  );
+  const destination = event.request.destination;
+  const needsFreshVersion = event.request.mode === "navigate" || destination === "document" || destination === "script" || destination === "style";
+  event.respondWith(needsFreshVersion ? networkFirst(event.request) : cacheFirst(event.request));
 });
