@@ -13,5 +13,5 @@
    Пока значения — заглушки, приложение работает локально на устройстве. */
 window.SUPABASE_CONFIG = {
   url: "https://emhplcinxtzyantctsgr.supabase.co",
-  anonKey: "sb_secret_UT_UUmFyf6dT1LSofRDeBQ_Ee6-tQQ6"
+  anonKey: "sb_publishable_8lIXU9qioEN21u2H8mvewQ_-O8oUVWx"
 };
