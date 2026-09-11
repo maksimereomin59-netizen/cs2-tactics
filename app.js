@@ -1,1731 +1,2281 @@
-/* CS2 Tactical Playbook — командный доступ, профили игроков, таймер бомбы */
+/* ============================================================
+   CS2 TEAM PLAYBOOK — приложение.
+   Вход по названию команды + PIN, роли капитан/игрок,
+   облачная синхронизация через PlaybookDB, realtime-обновления.
+   ============================================================ */
 (function () {
   "use strict";
 
-  const STORE_KEY = "cs2-teams-v2";
-  const LEGACY_KEY = "cs2-playbook-v1";
-  const BASE = window.TACTICS_BASE;
-  const COLORS = ["#e6a72e", "#ef5d5d", "#5da9ff", "#48cf8b", "#b984ff", "#f2f4f7"];
-  const NADE_ICON = { smoke: "\u25CF", molly: "\u25C6", flash: "\u2726" };
-  const NADE_NAME = { smoke: "\u0441\u043C\u043E\u0443\u043A", molly: "\u043C\u043E\u043B\u0438\u043A", flash: "\u0444\u043B\u0435\u0448" };
-  const CAPTAIN_REMEMBER_MS = 30 * 24 * 60 * 60 * 1000;
-  const BOMB_SECONDS = 40;
+  const DB = window.PlaybookDB;
+  const Seed = window.PlaybookSeed;
 
-  let store = loadStore();
-  let data = null; // плейбук активной команды (ссылка на team.playbook)
-  let editMode = false;
-  let svgSerial = 0;
-  let toastTimer = null;
-  let bombInt = null;
-  let bomb = { state: "idle", left: BOMB_SECONDS, endAt: 0 }; // idle | run | pause | done
-  let gateTeamId = null;
-  let ui = {
-    map: null,
-    side: "T",
-    tab: "board",
-    player: null,
-    nade: null,
-    drawTool: "select",
-    drawColor: COLORS[0],
-    selected: null,
-  };
-
-  /* ================= данные и хранилище команд ================= */
-  function clone(value) {
-    return JSON.parse(JSON.stringify(value));
-  }
-
-  function uid(prefix) {
-    return (prefix || "id") + "-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
-  }
-
-  function normalizeData(value) {
-    const next = value && value.players && value.maps ? value : clone(BASE);
-    next.version = BASE.version;
-    next.meta = next.meta || clone(BASE.meta);
-    next.players = next.players || clone(BASE.players);
-    next.eco = next.eco || clone(BASE.eco);
-    Object.keys(BASE.maps).forEach((mapId) => {
-      if (!next.maps[mapId]) next.maps[mapId] = clone(BASE.maps[mapId]);
-      const map = next.maps[mapId];
-      map.image = BASE.maps[mapId].image;
-      map.zones = map.zones || clone(BASE.maps[mapId].zones);
-      map.links = map.links || clone(BASE.maps[mapId].links);
-      map.sides = map.sides || clone(BASE.maps[mapId].sides);
-      ["T", "CT"].forEach((side) => {
-        if (!map.sides[side]) map.sides[side] = clone(BASE.maps[mapId].sides[side]);
-        const sideData = map.sides[side];
-        if (!Array.isArray(sideData.drawings)) sideData.drawings = [];
-        if (!sideData.markerStyle) sideData.markerStyle = "number";
-        sideData.defaults = sideData.defaults || [];
-        sideData.nades = sideData.nades || [];
-        sideData.plan = sideData.plan || [];
-      });
-    });
-    const orderedMaps = {};
-    Object.keys(BASE.maps).forEach((mapId) => { orderedMaps[mapId] = next.maps[mapId]; });
-    Object.keys(next.maps).forEach((mapId) => { if (!orderedMaps[mapId]) orderedMaps[mapId] = next.maps[mapId]; });
-    next.maps = orderedMaps;
-    return next;
-  }
-
-  function blankStore() {
-    return { teams: [], activeId: null, unlocked: {}, players: {} };
-  }
-
-  function loadStore() {
-    let next = blankStore();
-    try {
-      const raw = localStorage.getItem(STORE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (parsed && Array.isArray(parsed.teams)) {
-          next = parsed;
-          next.unlocked = next.unlocked || {};
-          next.players = next.players || {};
-        }
-      }
-    } catch (error) {}
-    // Миграция старого одиночного плейбука в команду по умолчанию.
-    if (!next.teams.length) {
-      try {
-        const legacy = localStorage.getItem(LEGACY_KEY);
-        if (legacy) {
-          const team = makeTeam("Моя команда", normalizeData(JSON.parse(legacy)));
-          next.teams.push(team);
-          next.activeId = team.id;
-          localStorage.removeItem(LEGACY_KEY);
-        }
-      } catch (error) {}
-    }
-    next.teams.forEach((team) => {
-      team.playbook = normalizeData(team.playbook);
-      team.settings = team.settings || { start: "tasks" };
-      if (team.settings.start !== "maps") team.settings.start = "tasks";
-    });
-    persistStore(next);
-    return next;
-  }
-
-  function persistStore(target) {
-    try { localStorage.setItem(STORE_KEY, JSON.stringify(target || store)); } catch (error) {}
-  }
-
-  function save() {
-    persistStore();
-  }
-
-  function makeTeam(name, playbook) {
-    return {
-      id: uid("team"),
-      name: String(name || "Моя команда").slice(0, 40),
-      pass: null, // { salt, hash } — командный пароль
-      pin: null,  // { salt, hash } — PIN капитана
-      captainUntil: 0,
-      settings: { start: "tasks" },
-      playbook: playbook || normalizeData(clone(BASE)),
-    };
-  }
-
-  function teamById(id) {
-    return store.teams.find((team) => team.id === id) || null;
-  }
-
-  function activeTeam() {
-    return teamById(store.activeId);
-  }
-
-  function teamNeedsSetup(team) {
-    return !team || !team.pass || !team.pin;
-  }
-
-  function isUnlocked(team) {
-    return Boolean(team && team.pass && store.unlocked[team.id] === team.pass.hash);
-  }
-
-  function isLocked() {
-    const team = activeTeam();
-    return !team || teamNeedsSetup(team) || !isUnlocked(team);
-  }
-
-  function myPlayerId() {
-    const team = activeTeam();
-    return team ? (store.players[team.id] || null) : null;
-  }
-
-  function captainRemembered(team) {
-    return Boolean(team && team.pin && team.captainUntil && Date.now() < team.captainUntil);
-  }
-
-  /* ================= helpers ================= */
-  const $ = (selector, root) => (root || document).querySelector(selector);
-  const $$ = (selector, root) => Array.from((root || document).querySelectorAll(selector));
-  const esc = (value) => String(value == null ? "" : value).replace(/[&<>"']/g, (char) => ({
+  /* ---------- helpers ---------- */
+  const $ = (sel, root) => (root || document).querySelector(sel);
+  const $$ = (sel, root) => Array.from((root || document).querySelectorAll(sel));
+  const esc = (v) => String(v == null ? "" : v).replace(/[&<>"']/g, (c) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
-  }[char]));
-  const attr = esc;
-  const playerById = (id) => (data ? data.players.find((player) => player.id === id) : null);
-  const mapById = (id) => (data ? data.maps[id] : null);
-  const zoneById = (map, id) => map && (map.zones || []).find((zone) => zone.id === id);
-  const clamp = (number, min, max) => Math.max(min, Math.min(max, number));
-  const safeColor = (color) => /^#[0-9a-f]{6}$/i.test(String(color || "")) ? color : COLORS[0];
-  const cleanId = (id) => String(id || "item").replace(/[^a-z0-9_-]/gi, "");
-
-  function toast(message) {
-    const element = $("#toast");
-    if (!element) return;
-    clearTimeout(toastTimer);
-    element.textContent = message;
-    element.hidden = false;
-    toastTimer = setTimeout(() => { element.hidden = true; }, 2400);
+  }[c]));
+  const uid = (p) => (p || "x") + Math.random().toString(36).slice(2, 10);
+  const clone = (v) => (v == null ? v : JSON.parse(JSON.stringify(v)));
+  const debounce = (fn, ms) => {
+    let t = null;
+    return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
+  };
+  function fmtRel(ts) {
+    if (!ts) return "";
+    const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+    if (s < 60) return "только что";
+    const m = Math.floor(s / 60);
+    if (m < 60) return m + " мин назад";
+    const h = Math.floor(m / 60);
+    if (h < 24) return h + " ч назад";
+    const d = Math.floor(h / 24);
+    if (d === 1) return "вчера";
+    if (d < 7) return d + " дн назад";
+    return new Date(ts).toLocaleDateString("ru-RU", { day: "numeric", month: "short" });
   }
-
-  function bindMapImages() {
-    $$(".map-photo, .map-card-photo").forEach((image) => {
-      const showError = () => {
-        if (image.dataset.failed) return;
-        image.dataset.failed = "1";
-        image.classList.add("failed");
-        const holder = image.parentElement;
-        if (!holder || holder.querySelector(".map-load-error, .map-error")) return;
-        const message = document.createElement("div");
-        message.className = image.classList.contains("map-photo") ? "map-load-error" : "map-error";
-        message.textContent = "Изображение карты не загрузилось. Обновите страницу.";
-        holder.appendChild(message);
-      };
-      image.addEventListener("error", showError, { once: true });
-      if (image.complete && !image.naturalWidth) showError();
-    });
+  function fmtTime(ts) {
+    return new Date(ts).toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
   }
-
-  function setPath(path, value) {
-    const parts = path.split(".");
-    let target = data;
-    for (let index = 0; index < parts.length - 1; index++) target = target[parts[index]];
-    target[parts[parts.length - 1]] = value;
+  function go(hash) {
+    if (location.hash === hash) route();
+    else location.hash = hash;
   }
-
-  function closeModal() {
-    const modal = $("#modal");
-    if (modal) modal.remove();
-  }
-
-  function syncStickyTop() {
-    const header = $("#topbar");
-    if (!header) return;
-    document.documentElement.style.setProperty("--sticky-top", header.offsetHeight + "px");
-  }
-
-  /* ================= радар и пометки ================= */
-  function markersFor(mapId, side) {
-    const map = mapById(mapId);
-    const defaults = map.sides[side].defaults || [];
-    return defaults.map((position, index) => {
-      const zone = zoneById(map, position.zone) || { x: 50, y: 50 };
-      return {
-        player: position.player,
-        x: zone.x + (position.dx || 0),
-        y: zone.y + (position.dy || 0),
-        defaultIndex: index,
-      };
-    });
-  }
-
-  function drawingsFor(mapId, side) {
-    const sideData = mapById(mapId).sides[side];
-    if (!Array.isArray(sideData.drawings)) sideData.drawings = [];
-    return sideData.drawings;
-  }
-
-  function renderDrawing(drawing, arrowId, selected) {
-    const color = safeColor(drawing.color);
-    const classes = "draw-item" + (selected ? " selected" : "");
-    const id = attr(drawing.id);
-
-    if (drawing.type === "arrow" || drawing.type === "line") {
-      const marker = drawing.type === "arrow" ? ' marker-end="url(#' + arrowId + ')"' : "";
-      const coords = ' x1="' + drawing.x1 + '" y1="' + drawing.y1 + '" x2="' + drawing.x2 + '" y2="' + drawing.y2 + '"';
-      return '<g class="' + classes + '" data-drawing-id="' + id + '" style="color:' + color + '">' +
-        '<line class="move-line hit"' + coords + '/>' +
-        '<line class="move-line visible" stroke="' + color + '"' + coords + marker + '/>' +
-        '<line class="selection-ring"' + coords + '/></g>';
-    }
-
-    if (drawing.type === "pen" && Array.isArray(drawing.points)) {
-      const points = drawing.points.map((point) => point[0] + "," + point[1]).join(" ");
-      return '<g class="' + classes + '" data-drawing-id="' + id + '" style="color:' + color + '">' +
-        '<polyline class="move-line hit" points="' + points + '"/>' +
-        '<polyline class="move-line visible" stroke="' + color + '" points="' + points + '"/>' +
-        '<polyline class="selection-ring" points="' + points + '"/></g>';
-    }
-
-    if (drawing.type === "number") {
-      const text = esc(String(drawing.text || "1").slice(0, 3));
-      return '<g class="' + classes + ' draw-marker" data-drawing-id="' + id + '" transform="translate(' + drawing.x + ',' + drawing.y + ')" style="color:' + color + '">' +
-        '<circle class="tactic-number-bg" r="3.25" stroke="' + color + '"/>' +
-        '<circle class="selection-ring" r="4.2"/>' +
-        '<text class="tactic-number-text" y=".15" fill="' + color + '">' + text + "</text></g>";
-    }
-
-    const label = String(drawing.text || "МЕТКА").slice(0, 24);
-    const width = clamp(label.length * 1.9 + 5, 12, 48);
-    return '<g class="' + classes + ' draw-marker" data-drawing-id="' + id + '" transform="translate(' + drawing.x + ',' + drawing.y + ')" style="color:' + color + '">' +
-      '<rect class="tactic-label-bg" x="' + (-width / 2) + '" y="-2.65" width="' + width + '" height="5.3" rx="1" stroke="' + color + '"/>' +
-      '<rect class="selection-ring" x="' + (-width / 2 - 1) + '" y="-3.65" width="' + (width + 2) + '" height="7.3" rx="1"/>' +
-      '<text class="tactic-label" y=".1" fill="' + color + '">' + esc(label) + "</text></g>";
-  }
-
-  function mapFrame(mapId, options) {
-    const map = mapById(mapId);
-    return '<div class="map-canvas" data-map-frame="' + attr(mapId) + '">' +
-      '<img class="map-photo" src="' + attr(map.image) + '?v=7" alt="Карта ' + attr(map.name) + '" draggable="false">' +
-      mapSVG(mapId, options) +
-      "</div>";
-  }
-
-  // Только ручные пометки капитана: автоматических зон и обводок нет.
-  function mapSVG(mapId, options) {
-    const opts = options || {};
-    const map = mapById(mapId);
-    const serial = ++svgSerial;
-    const nadeArrowId = "nade-arrow-" + serial;
-    const drawings = opts.drawings || [];
-    const selected = opts.selected || null;
-    const arrowIds = {};
-
-    let defs = '<marker id="' + nadeArrowId + '" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#dd5a5a"/></marker>';
-    drawings.forEach((drawing, index) => {
-      if (drawing.type !== "arrow") return;
-      const markerId = "move-arrow-" + serial + "-" + cleanId(drawing.id) + "-" + index;
-      arrowIds[drawing.id] = markerId;
-      defs += '<marker id="' + markerId + '" viewBox="0 0 10 10" refX="8.2" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="' + safeColor(drawing.color) + '"/></marker>';
-    });
-
-    let svg = '<svg class="map tactical-map' + (opts.editor ? " editor-active" : "") + '" viewBox="0 0 100 100" data-map="' + attr(mapId) + '" data-side="' + attr(opts.side || "") + '" data-arrow-id="' + nadeArrowId + '" role="img" aria-label="Тактические пометки карты ' + attr(map.name) + '">';
-    svg += "<defs>" + defs + "</defs>";
-    svg += '<rect class="map-hit-area" width="100" height="100" fill="transparent"/>';
-
-    (opts.arrows || []).forEach((arrow) => {
-      svg += '<line class="nade-arrow" x1="' + arrow.fx + '" y1="' + arrow.fy + '" x2="' + arrow.tx + '" y2="' + arrow.ty + '" marker-end="url(#' + nadeArrowId + ')"/>';
-      svg += '<circle class="nade-from" cx="' + arrow.fx + '" cy="' + arrow.fy + '" r="2.5"/>';
-      svg += '<text class="nade-from-ic" x="' + arrow.fx + '" y="' + (arrow.fy + 1.05) + '">' + (NADE_ICON[arrow.type] || "\u2022") + "</text>";
-      svg += '<g class="nade-to"><line x1="' + (arrow.tx - 1.8) + '" y1="' + (arrow.ty - 1.8) + '" x2="' + (arrow.tx + 1.8) + '" y2="' + (arrow.ty + 1.8) + '"/><line x1="' + (arrow.tx - 1.8) + '" y1="' + (arrow.ty + 1.8) + '" x2="' + (arrow.tx + 1.8) + '" y2="' + (arrow.ty - 1.8) + '"/></g>';
-    });
-
-    drawings.forEach((drawing) => {
-      svg += renderDrawing(drawing, arrowIds[drawing.id], selected === drawing.id);
-    });
-
-    const labelStyle = opts.labelStyle || "number";
-    (opts.markers || []).forEach((marker) => {
-      const player = playerById(marker.player);
-      if (!player) return;
-      const playerIndex = data.players.indexOf(player);
-      const color = safeColor(player.color);
-      const classes = "pmk" + (opts.dimOthers && ui.player && marker.player !== ui.player ? " dim" : "") + (opts.focus === marker.player ? " foc" : "");
-      svg += '<g class="' + classes + '" data-player="' + attr(marker.player) + '" data-default-index="' + marker.defaultIndex + '" transform="translate(' + marker.x + "," + marker.y + ')">';
-      if (labelStyle === "nick") {
-        const nick = String(player.nick || "?").slice(0, 18);
-        const width = clamp(nick.length * 1.75 + 5, 12, 36);
-        svg += '<rect class="player-tag" x="' + (-width / 2) + '" y="-2.7" width="' + width + '" height="5.4" rx="1" stroke="' + color + '"/>';
-        svg += '<text class="player-nick" y=".1" fill="' + color + '">' + esc(nick) + "</text>";
-      } else {
-        svg += '<circle r="3.25" stroke="' + color + '"/><text class="player-num" y=".1" fill="' + color + '">' + (playerIndex + 1) + "</text>";
-      }
-      svg += "</g>";
-    });
-
-    svg += "</svg>";
-    return svg;
-  }
-
-  /* ================= роутер ================= */
   function parseHash() {
     return location.hash.replace(/^#\/?/, "").split("/").filter(Boolean);
   }
 
-  function startRoute() {
-    const team = activeTeam();
-    const start = team && team.settings && team.settings.start === "maps" ? "#/maps" : "#/me";
-    if (!myPlayerId()) return "#/profile";
-    return start;
+  /* ---------- ui state ---------- */
+  const S = {
+    tfilter: { map: "", side: "", cat: "" },
+    mfilter: { type: "", map: "" },
+    pendingMaterial: null,
+    boardTool: "select",
+    boardColor: "#e8a72f",
+    boardSel: null,
+    sheetOpen: false,
+    bootDone: false,
+  };
+  const isCap = () => DB.isCaptain();
+
+  const playerById = (id) => DB.cache.players.find((p) => p.id === id) || null;
+  const mapById = (id) => DB.cache.maps.find((m) => m.id === id) || null;
+  const tacticById = (id) => DB.cache.tactics.find((t) => t.id === id) || null;
+  const materialById = (id) => DB.cache.materials.find((m) => m.id === id) || null;
+
+  /* ---------- toast ---------- */
+  function toast(msg, kind) {
+    const root = $("#toastRoot");
+    const el = document.createElement("div");
+    el.className = "toast" + (kind ? " " + kind : "");
+    el.textContent = msg;
+    root.appendChild(el);
+    setTimeout(() => { el.remove(); }, 2200);
   }
 
-  function route() {
-    ui.nade = null;
-    ui.selected = null;
-    paintChrome();
+  /* ---------- save indicator ---------- */
+  let saveTimer = null;
+  function saveState(state) {
+    const el = $("#saveState");
+    if (!el) return;
+    clearTimeout(saveTimer);
+    if (!state) { el.hidden = true; return; }
+    el.hidden = false;
+    if (state === "saving") { el.classList.remove("ok"); el.textContent = "Сохраняем…"; }
+    else if (state === "saved") {
+      el.classList.add("ok"); el.textContent = "✓ Сохранено";
+      saveTimer = setTimeout(() => { el.hidden = true; }, 2000);
+    } else if (state === "offline") {
+      el.classList.remove("ok"); el.textContent = "Нет соединения";
+    }
+  }
 
-    if (isLocked()) {
-      const team = activeTeam();
-      if (!team || teamNeedsSetup(team)) renderSetupGate();
-      else renderGate();
+  /* ---------- sheet (bottom sheet / dialog) ---------- */
+  function openSheet(title, bodyHTML, footHTML) {
+    closeMenus();
+    S.sheetOpen = true;
+    const root = $("#sheetRoot");
+    root.innerHTML = '<div class="sheet" role="dialog"><div class="sheet-head"><h3>' + esc(title) +
+      '</h3><button class="iconbtn" data-close type="button">✕</button></div><div class="sheet-body">' +
+      bodyHTML + "</div>" + (footHTML ? '<div class="sheet-foot">' + footHTML + "</div>" : "") + "</div>";
+    root.hidden = false;
+    root.onclick = (e) => { if (e.target === root) closeSheet(); };
+    $("[data-close]", root).onclick = closeSheet;
+    return root;
+  }
+  function closeSheet() {
+    $("#sheetRoot").hidden = true;
+    $("#sheetRoot").innerHTML = "";
+    S.sheetOpen = false;
+  }
+  function sheetOpen() { return S.sheetOpen; }
+
+  /* ---------- modal (compact confirm) ---------- */
+  function openModal(title, textHTML, buttons) {
+    const root = $("#modalRoot");
+    let btns = "";
+    (buttons || [{ id: "ok", label: "Закрыть", primary: true }]).forEach((b) => {
+      btns += '<button class="btn ' + (b.primary ? "" : b.danger ? "danger" : "ghost") + '" data-mbtn="' + b.id + '" type="button">' + esc(b.label) + "</button>";
+    });
+    root.innerHTML = '<div class="modal" role="alertdialog"><h3>' + esc(title) + "</h3><p>" + textHTML +
+      '</p><div class="btnrow">' + btns + "</div></div>";
+    root.hidden = false;
+    root.onclick = (e) => { if (e.target === root) closeModal(); };
+    $$("[data-mbtn]", root).forEach((btn) => {
+      btn.onclick = () => {
+        const b = (buttons || []).find((x) => x.id === btn.dataset.mbtn);
+        closeModal();
+        if (b && b.onClick) b.onClick();
+      };
+    });
+  }
+  function closeModal() {
+    $("#modalRoot").hidden = true;
+    $("#modalRoot").innerHTML = "";
+  }
+  function modalOpen() { return !$("#modalRoot").hidden; }
+  function confirmDlg(title, onYes) {
+    openModal(title, "Действие нельзя отменить.", [
+      { id: "no", label: "Отмена" },
+      { id: "yes", label: "Удалить", danger: true, onClick: onYes },
+    ]);
+  }
+
+  /* ---------- popup menu (⋮) ---------- */
+  function closeMenus() {
+    $$(".menu").forEach((m) => m.remove());
+    document.removeEventListener("click", closeMenus);
+  }
+  function openMenu(anchor, items) {
+    closeMenus();
+    const menu = document.createElement("div");
+    menu.className = "menu";
+    items.forEach((it) => {
+      if (it.sep) { menu.insertAdjacentHTML("beforeend", '<div class="menu-sep"></div>'); return; }
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "menu-item" + (it.danger ? " danger" : "");
+      b.textContent = it.label;
+      b.onclick = (e) => { e.stopPropagation(); closeMenus(); it.onClick && it.onClick(); };
+      menu.appendChild(b);
+    });
+    document.body.appendChild(menu);
+    const r = anchor.getBoundingClientRect();
+    const mw = 210, mh = Math.min(window.innerHeight - 20, items.length * 38 + 12);
+    let x = Math.min(window.innerWidth - mw - 8, Math.max(8, r.right - mw));
+    let y = r.bottom + 4;
+    if (y + mh > window.innerHeight - 8) y = Math.max(8, r.top - mh - 4);
+    menu.style.left = x + "px";
+    menu.style.top = y + "px";
+    setTimeout(() => document.addEventListener("click", closeMenus), 0);
+  }
+  function menuOpen() { return !!document.querySelector(".menu"); }
+
+  /* ---------- fullscreen viewer ---------- */
+  function openViewer(imgSrc, caption) {
+    const root = $("#viewerRoot");
+    root.innerHTML = '<button class="iconbtn viewer-x" type="button">✕</button><div><img class="viewer-img" src="' +
+      esc(imgSrc) + '" alt="' + esc(caption || "") + '">' + (caption ? '<div class="viewer-cap">' + esc(caption) + "</div>" : "") + "</div>";
+    root.hidden = false;
+    root.onclick = closeViewer;
+  }
+  function closeViewer() {
+    $("#viewerRoot").hidden = true;
+    $("#viewerRoot").innerHTML = "";
+  }
+
+  /* ---------- write helper with autosave indicator ---------- */
+  async function commit(activityText, activityRef, fn) {
+    if (!isCap()) { toast("Только капитан может изменять"); return null; }
+    saveState("saving");
+    try {
+      const res = await fn();
+      if (activityText) await DB.log(activityText, activityRef || null);
+      saveState("saved");
+      render();
+      return res;
+    } catch (e) {
+      saveState("");
+      toast((e && e.message) || "Не сохранилось", "warn");
+      return null;
+    }
+  }
+
+  /* ---------- shell ---------- */
+  const NAV = [
+    { id: "overview", label: "Обзор", hash: "#/overview" },
+    { id: "maps", label: "Карты", hash: "#/maps" },
+    { id: "tactics", label: "Тактики", hash: "#/tactics" },
+    { id: "players", label: "Игроки", hash: "#/players" },
+    { id: "materials", label: "Материалы", hash: "#/materials" },
+    { id: "me", label: "Мой профиль", hash: "#/me" },
+  ];
+  const BOTTOM_NAV = ["overview", "maps", "tactics", "players"];
+
+  function currentNavId() {
+    const p = parseHash()[0] || "";
+    if (p === "map") return "maps";
+    if (p === "tactic") return "tactics";
+    if (p === "player") return "players";
+    if (p === "who") return "me";
+    if (p === "manage") return "manage";
+    return p || "overview";
+  }
+
+  function paintShell() {
+    const logged = !!DB.team;
+    $("#topbar").hidden = !logged;
+    $("#sidebar").hidden = !logged;
+    $("#bottomNav").hidden = !logged;
+    document.body.classList.toggle("captain", logged && isCap());
+    if (!logged) return;
+    $("#brandTeam").textContent = DB.team.name;
+    const badge = $("#roleBadge");
+    badge.textContent = isCap() ? "Капитан" : "Игрок";
+    badge.classList.toggle("cap", isCap());
+    paintNet();
+    const cur = currentNavId();
+    $("#sideNav").innerHTML = NAV.map((n) =>
+      '<a class="snlink' + (cur === n.id ? " on" : "") + '" href="' + n.hash + '">' + esc(n.label) + "</a>"
+    ).join("") + '<a class="snlink' + (cur === "manage" ? " on" : "") + '" href="#/manage">⚙ Управление</a>';
+    $("#sideFoot").innerHTML = esc(DB.mode() === "cloud" ? "Облако: синхронизация включена" : "Локальный режим: облако не подключено") +
+      '<br><a href="#/manage" style="color:var(--muted)">Настройки →</a>';
+    $("#bottomNav").innerHTML = BOTTOM_NAV.map((id) => {
+      const n = NAV.find((x) => x.id === id);
+      return '<a class="bnbtn' + (cur === id ? " on" : "") + '" href="' + n.hash + '">' + esc(n.label) + "</a>";
+    }).join("") + '<button class="bnbtn' + ((cur === "materials" || cur === "me" || cur === "manage") ? " on" : "") + '" data-more type="button">Ещё</button>';
+    $("[data-more]").onclick = openMore;
+  }
+
+  function paintNet() {
+    const dot = $("#netDot");
+    if (!dot) return;
+    const cloud = DB.mode() === "cloud";
+    dot.classList.toggle("off", cloud && !DB.online);
+    dot.classList.toggle("local", !cloud);
+    dot.title = cloud ? (DB.online ? "Облако: подключено" : "Нет соединения") : "Локальный режим";
+    if (cloud && !DB.online) saveState("offline");
+    else if ($("#saveState").textContent === "Нет соединения") saveState("");
+  }
+
+  function openMore() {
+    openSheet("Ещё", '<div class="sec" style="margin-top:10px"><div class="sec-body">' +
+      rowHTML("#/materials", "Материалы", DB.cache.materials.length + " шт.") +
+      rowHTML("#/me", "Мой профиль", myName() || "Выбрать себя") +
+      rowHTML("#/manage", "⚙ Управление", isCap() ? "Панель капитана" : "Вход для капитана") +
+      "</div></div>" +
+      '<div class="btnrow"><button class="btn ghost block" data-logout type="button">Выйти из команды</button></div>', "");
+    $$("[data-goto]").forEach((a) => { a.onclick = closeSheet; });
+    $("[data-logout]").onclick = () => { closeSheet(); doLogout(); };
+  }
+  function rowHTML(hash, title, sub) {
+    return '<a class="row" data-goto href="' + hash + '"><span class="row-main"><b>' + esc(title) + "</b>" +
+      (sub ? "<small>" + esc(sub) + "</small>" : "") + '</span><span class="row-arrow">›</span></a>';
+  }
+  function myName() {
+    const me = playerById(DB.myPlayerId());
+    return me ? me.name : "";
+  }
+  function doLogout() {
+    DB.logout();
+    closeSheet();
+    go("#/login");
+  }
+
+  /* ---------- global search ---------- */
+  function openSearch() {
+    closeMenus();
+    const ov = document.createElement("div");
+    ov.className = "searchov";
+    ov.innerHTML = '<div class="searchbox"><input id="gSearch" placeholder="Поиск: smoke, Mirage, A Execute…" autocomplete="off">' +
+      '<button class="btn ghost" type="button" data-x>Закрыть</button></div><div class="searchres" id="gRes"></div>';
+    document.body.appendChild(ov);
+    const close = () => ov.remove();
+    ov.onclick = (e) => { if (e.target === ov) close(); };
+    $("[data-x]", ov).onclick = close;
+    const input = $("#gSearch", ov);
+    const res = $("#gRes", ov);
+    const run = () => {
+      const list = DB.search(input.value);
+      if (!list.length) {
+        res.innerHTML = '<div class="empty">' + (input.value.trim().length < 2 ? "Введите минимум 2 символа" : "Ничего не найдено") + "</div>";
+        return;
+      }
+      res.innerHTML = list.map((r) =>
+        '<button class="row" data-kind="' + r.kind + '" data-id="' + esc(r.id) + '" type="button"><span class="row-main"><b>' +
+        esc(r.title) + "</b><small>" + esc(r.sub || "") + "</small></span><span class=\"row-arrow\">›</span></button>"
+      ).join("");
+      $$(".row", res).forEach((b) => {
+        b.onclick = () => { close(); openRef(b.dataset.kind, b.dataset.id); };
+      });
+    };
+    input.oninput = debounce(run, 120);
+    run();
+    setTimeout(() => input.focus(), 30);
+  }
+  function openRef(kind, id) {
+    if (kind === "tactic") go("#/tactic/" + id);
+    else if (kind === "player") go("#/player/" + id);
+    else if (kind === "map") go("#/map/" + id);
+    else if (kind === "material") { S.pendingMaterial = id; go("#/materials"); }
+  }
+
+  /* ---------- router ---------- */
+  function route() {
+    closeSheet(); closeModal(); closeMenus(); closeViewer();
+    S.boardSel = null;
+    const logged = !!DB.team;
+    const p = parseHash();
+    if (!logged) {
+      paintShell();
+      if (p[0] === "create") viewCreate();
+      else viewLogin();
       window.scrollTo(0, 0);
       return;
     }
-
-    const team = activeTeam();
-    data = team.playbook;
-    const parts = parseHash();
-
-    if (parts[0] === "map" && parts[1] && mapById(parts[1])) {
-      if (ui.map !== parts[1]) ui.tab = "board";
-      ui.map = parts[1];
-      ui.player = null;
-      if (parts[2] === "T" || parts[2] === "CT") ui.side = parts[2];
-      renderMapPage();
-    } else if (parts[0] === "player" && parts[1] && playerById(parts[1])) {
-      ui.map = null;
-      ui.player = parts[1];
-      renderPlayerPage();
-    } else if (parts[0] === "maps") {
-      ui.map = null;
-      ui.player = null;
-      renderMapsPage();
-    } else if (parts[0] === "team") {
-      ui.map = null;
-      ui.player = null;
-      renderTeamPage();
-    } else if (parts[0] === "profile") {
-      ui.map = null;
-      ui.player = null;
-      renderProfilePage();
-    } else if (parts[0] === "bomb" || parts[0] === "timer") {
-      startBomb(); // старая ссылка: сразу запускаем таймер
-      location.hash = startRoute();
-      return;
-    } else if (parts[0] === "me") {
-      if (!myPlayerId()) { location.hash = "#/profile"; return; }
-      ui.map = null;
-      ui.player = myPlayerId();
-      renderPlayerPage();
-    } else {
-      location.hash = startRoute();
-      return;
-    }
-    paintNav(parts[0]);
+    paintShell();
+    render(false);
     window.scrollTo(0, 0);
   }
 
-  function paintChrome() {
-    const locked = isLocked();
-    const team = activeTeam();
-    document.body.classList.toggle("locked", locked);
-    $("#topActions").hidden = locked;
-    $("#bottomNav").hidden = locked;
-    $("#editPanel").hidden = locked || !editMode;
-    $("#teamTitle").textContent = team && !teamNeedsSetup(team) ? team.name : "Плейбук команды";
-    $("#footTeam").textContent = team && !teamNeedsSetup(team) ? team.name + " · CS2" : "CS2 Плейбук команды";
-    const editBtn = $("#editBtn");
-    editBtn.classList.toggle("on", editMode);
-    editBtn.textContent = editMode ? "Капитан ✓" : "Капитан";
-    if (editMode) paintCaptainBar();
-    requestAnimationFrame(syncStickyTop);
+  function render(preserveScroll) {
+    const y = preserveScroll === false ? 0 : window.scrollY;
+    const p = parseHash();
+    const id = p[0] || "overview";
+    paintShell();
+    if (id === "overview" || id === "") viewOverview();
+    else if (id === "maps") viewMaps();
+    else if (id === "map") viewMap(p[1]);
+    else if (id === "tactics") viewTactics();
+    else if (id === "tactic") viewTactic(p[1]);
+    else if (id === "players") viewPlayers();
+    else if (id === "player") viewPlayer(p[1]);
+    else if (id === "me" || id === "who") viewMe();
+    else if (id === "materials") viewMaterials();
+    else if (id === "manage") viewManage();
+    else if (id === "login" || id === "create") viewOverview();
+    else viewOverview();
+    if (preserveScroll !== false) window.scrollTo(0, y);
   }
 
-  function paintNav(first) {
-    const map = { me: "me", maps: "maps", map: "maps", team: "team", player: "team", profile: "me" };
-    let key = map[first] || "me";
-    if (first === "player" && ui.player === myPlayerId()) key = "me";
-    if (!first) {
-      const team = activeTeam();
-      key = team && team.settings.start === "maps" ? "maps" : "me";
-    }
-    $$("#bottomNav .bnav-btn").forEach((button) => {
-      button.classList.toggle("on", button.dataset.nav === key);
-    });
-  }
-
-  function paintCaptainBar() {
-    const team = activeTeam();
-    const holder = $("#editPanelInner");
-    if (!holder || !team) return;
-    const startLabel = team.settings.start === "maps" ? "Карты" : "Задачи";
-    holder.innerHTML =
-      '<div class="captain-state"><span class="status-dot"></span><b>' + esc(team.name) + "</b><span>Первый экран: " + startLabel + "</span></div>" +
-      '<div class="panel-actions">' +
-      '<button class="panel-btn" id="setBtn" type="button">Настройки</button>' +
-      '<button class="panel-btn" id="expBtn" type="button">Экспорт</button>' +
-      '<button class="panel-btn" id="impBtn" type="button">Импорт</button>' +
-      '<button class="panel-btn danger" id="capOffBtn" type="button">Закрыть</button>' +
-      "</div>";
-    $("#setBtn").onclick = openCaptainSettings;
-    $("#expBtn").onclick = exportTeam;
-    $("#impBtn").onclick = importModal;
-    $("#capOffBtn").onclick = () => { setEdit(false); toast("Режим капитана закрыт"); };
-  }
-
-  /* ================= вход: пароль команды ================= */
-  function renderSetupGate() {
+  /* ---------- auth: login ---------- */
+  let authMode = "player";
+  function viewLogin() {
     const view = $("#view");
-    const hasTeams = store.teams.length > 0;
     view.innerHTML =
-      '<section class="gate"><div class="gate-hero"><span class="gate-badge">CS2</span>' +
-      "<h1>Плейбук команды</h1><p>Закрытый доступ. Первый вход настраивает капитан.</p></div>" +
-      '<div class="card"><h2>Настройка капитана</h2>' +
-      '<p class="muted">Придумайте название команды, общий пароль для игроков и отдельный PIN капитана. Игроки увидят тактики только после ввода пароля.</p>' +
-      '<form id="setupForm">' +
-      '<label class="field"><span>Название команды</span><input id="setupName" maxlength="40" value="' + attr(hasTeams && activeTeam() ? activeTeam().name : "") + '" placeholder="Например, NAVI Junior" required></label>' +
-      '<label class="field"><span>Командный пароль (для игроков)</span><input id="setupPass" type="password" minlength="4" autocomplete="new-password" placeholder="Минимум 4 символа" required></label>' +
-      '<label class="field"><span>PIN капитана (только для вас)</span><input id="setupPin" type="password" inputmode="numeric" minlength="4" autocomplete="new-password" placeholder="Минимум 4 символа" required></label>' +
-      '<div class="field"><span>Что игроки видят первым</span><div class="radio-row">' +
-      '<label class="radio-card"><input type="radio" name="setupStart" value="tasks" checked> Мои задачи</label>' +
-      '<label class="radio-card"><input type="radio" name="setupStart" value="maps"> Карты</label>' +
-      "</div></div>" +
-      '<div class="form-error" id="setupError"></div>' +
-      '<div class="row"><button class="btn big block" type="submit">Создать доступ команды</button></div>' +
-      "</form>" +
-      (hasTeams ? '<div class="gate-links"><button class="link-btn" id="gateBack" type="button">← К выбору команды</button></div>' : '<div class="gate-links"><button class="link-btn" id="gateImport" type="button">Импортировать файл от капитана</button></div>') +
-      "</div></section>";
-    $("#setupForm").onsubmit = (event) => { event.preventDefault(); doSetup(); };
-    const back = $("#gateBack");
-    if (back) back.onclick = () => { renderGate(); };
-    const imp = $("#gateImport");
-    if (imp) imp.onclick = importModal;
-    syncStickyTop();
-  }
-
-  async function doSetup() {
-    const name = $("#setupName").value.trim().slice(0, 40);
-    const pass = $("#setupPass").value;
-    const pin = $("#setupPin").value;
-    const start = ($('input[name="setupStart"]:checked') || {}).value === "maps" ? "maps" : "tasks";
-    const error = $("#setupError");
-    if (!name) { error.textContent = "Введите название команды."; return; }
-    if (pass.length < 4) { error.textContent = "Пароль: минимум 4 символа."; return; }
-    if (pin.length < 4) { error.textContent = "PIN: минимум 4 символа."; return; }
-    if (pass === pin) { error.textContent = "Пароль и PIN должны различаться."; return; }
-    let team = activeTeam();
-    if (!team || !teamNeedsSetup(team)) {
-      team = makeTeam(name);
-      store.teams.push(team);
-      store.activeId = team.id;
-    }
-    team.name = name;
-    team.pass = { salt: randomSalt(), hash: "" };
-    team.pass.hash = await passwordHash(pass, team.pass.salt);
-    team.pin = { salt: randomSalt(), hash: "" };
-    team.pin.hash = await passwordHash(pin, team.pin.salt);
-    team.settings.start = start;
-    team.captainUntil = Date.now() + CAPTAIN_REMEMBER_MS;
-    store.unlocked[team.id] = team.pass.hash;
-    data = team.playbook;
-    save();
-    setEdit(true);
-    toast("Доступ создан. Устройство капитана запомнено на 30 дней");
-    location.hash = "#/profile";
-    route();
-  }
-
-  function renderGate() {
-    const view = $("#view");
-    if (!gateTeamId || !teamById(gateTeamId)) gateTeamId = store.activeId;
-    const team = teamById(gateTeamId) || store.teams[0];
-    gateTeamId = team ? team.id : null;
-    let teamsHtml = '<div class="team-pick">';
-    store.teams.forEach((item) => {
-      if (teamNeedsSetup(item)) return;
-      teamsHtml += '<button class="team-pick-btn' + (item.id === gateTeamId ? " on" : "") + '" data-team="' + attr(item.id) + '" type="button"><span>' + esc(item.name) + "<small>" + (isUnlocked(item) ? "Разблокирована на этом устройстве" : "Нужен командный пароль") + "</small></span><span>→</span></button>";
-    });
-    teamsHtml += "</div>";
-    const quickOpen = team && isUnlocked(team);
-    const accessHtml = quickOpen
-      ? '<div class="row"><button class="btn big block" id="gateOpen" type="button">Открыть ' + esc(team.name) + "</button></div>" +
-        '<p class="muted" style="margin-bottom:0">Это устройство уже разблокировано для команды.</p>'
-      : '<form id="gateForm">' +
-        '<label class="field"><span>Командный пароль · ' + esc(team ? team.name : "") + '</span><input id="gatePass" type="password" autocomplete="current-password" placeholder="Пароль от капитана" required></label>' +
-        '<div class="form-error" id="gateError"></div>' +
-        '<div class="row"><button class="btn big block" type="submit">Войти</button></div>' +
-        "</form>";
-    view.innerHTML =
-      '<section class="gate"><div class="gate-hero"><span class="gate-badge">CS2</span>' +
-      "<h1>Вход команды</h1><p>Введите командный пароль — откроются тактики вашей команды.</p></div>" +
-      '<div class="card"><h2>Выберите команду</h2>' + teamsHtml + accessHtml +
-      '<div class="gate-links"><button class="link-btn" id="gateImport" type="button">Импорт от капитана</button><button class="link-btn" id="gateNew" type="button">Новая команда (капитан)</button></div>' +
-      "</div></section>";
-    $$("[data-team]").forEach((button) => {
-      button.onclick = () => { gateTeamId = button.dataset.team; store.activeId = gateTeamId; save(); renderGate(); };
-    });
-    const gateForm = $("#gateForm");
-    if (gateForm) gateForm.onsubmit = (event) => { event.preventDefault(); doUnlock(); };
-    const gateOpen = $("#gateOpen");
-    if (gateOpen) gateOpen.onclick = () => { enterTeam(team); };
-    $("#gateImport").onclick = importModal;
-    $("#gateNew").onclick = () => { store.activeId = null; save(); paintChrome(); renderSetupGate(); };
-    syncStickyTop();
-  }
-
-  async function doUnlock() {
-    const team = teamById(gateTeamId);
-    const error = $("#gateError");
-    if (!team || teamNeedsSetup(team)) { error.textContent = "Выберите команду."; return; }
-    const pass = $("#gatePass").value;
-    const hash = await passwordHash(pass, team.pass.salt);
-    if (hash !== team.pass.hash) {
-      error.textContent = "Неверный пароль. Спросите пароль у капитана.";
-      $("#gatePass").select();
-      return;
-    }
-    store.activeId = team.id;
-    store.unlocked[team.id] = team.pass.hash;
-    save();
-    enterTeam(team, "Добро пожаловать в " + team.name);
-  }
-
-  function enterTeam(team, greeting) {
-    store.activeId = team.id;
-    data = team.playbook;
-    save();
-    // Устройство капитана помним 30 дней — правки включаются сами.
-    if (captainRemembered(team)) {
-      setEdit(true);
-      toast("С возвращением, капитан");
-    } else {
-      setEdit(false);
-      if (greeting) toast(greeting);
-    }
-    location.hash = startRoute();
-    route();
-  }
-
-  function lockTeam(full) {
-    const team = activeTeam();
-    setEdit(false);
-    stopBomb(true);
-    if (team && full) delete store.unlocked[team.id];
-    if (team) gateTeamId = team.id;
-    save();
-    paintChrome();
-    renderGate();
-    window.scrollTo(0, 0);
-  }
-
-  /* ================= выбор профиля ================= */
-  function renderProfilePage() {
-    const team = activeTeam();
-    const view = $("#view");
-    let cards = '<div class="profile-pick">';
-    data.players.forEach((player, index) => {
-      cards += '<button class="chip" style="--pc:' + safeColor(player.color) + '" data-profile="' + attr(player.id) + '" type="button"><span class="chip-n">' + (index + 1) + '</span><span class="chip-t"><b>' + esc(player.nick) + "</b><small>" + esc(player.role) + "</small></span></button>";
-    });
-    cards += "</div>";
-    view.innerHTML =
-      '<section class="hero"><p class="eyebrow">' + esc(team.name) + '</p><h1>Кто вы?</h1><p>Выберите свой профиль один раз — дальше сразу откроются личные задачи и позиции.</p></section>' +
-      '<section class="card"><h2>Состав</h2>' + cards + "</section>";
-    $$("[data-profile]").forEach((button) => {
-      button.onclick = () => {
-        store.players[team.id] = button.dataset.profile;
-        save();
-        toast("Профиль сохранён");
-        location.hash = team.settings.start === "maps" ? "#/maps" : "#/me";
-        route();
-      };
-    });
-    paintNav("profile");
-    bindMapImages();
-    applyEdit();
-  }
-
-  /* ================= страницы: задачи / карты / команда ================= */
-  function mateChips(currentId, linkPrefix) {
-    let html = '<div class="mate-row">';
-    data.players.forEach((player) => {
-      html += '<a class="mate-btn' + (player.id === currentId ? " on" : "") + '" style="--pc:' + safeColor(player.color) + '" href="' + linkPrefix + attr(player.id) + '">' + esc(player.nick) + (player.id === myPlayerId() ? " · вы" : "") + "</a>";
-    });
-    return html + "</div>";
-  }
-
-  function sideTab(side) {
-    return '<button class="stab ' + (ui.side === side ? "on" : "") + '" data-side="' + side + '" type="button">' + (side === "T" ? "Атака · T" : "Защита · CT") + "</button>";
-  }
-
-  function bindSideTabs(onMap) {
-    $$(".stab").forEach((button) => {
-      button.onclick = () => {
-        ui.side = button.dataset.side;
-        ui.selected = null;
-        if (onMap) location.hash = "#/map/" + ui.map + "/" + ui.side;
-        else renderPlayerPage();
-      };
-    });
-  }
-
-  function renderPlayerPage() {
-    const team = activeTeam();
-    const player = playerById(ui.player) || playerById(myPlayerId());
-    const view = $("#view");
-    if (!player) { location.hash = "#/profile"; return; }
-    ui.player = player.id;
-    const playerIndex = data.players.indexOf(player);
-    const isMe = player.id === myPlayerId();
-
-    let html = '<div class="sticky-sub"><a class="back" href="' + (isMe ? "#/maps" : "#/team") + '">← ' + (isMe ? "К картам" : "К команде") + "</a></div>";
-    html += mateChips(player.id, "#/player/");
-    html += '<section class="hero phead" style="--pc:' + safeColor(player.color) + '"><span class="pnum">' + (playerIndex + 1) + '</span><div><p class="eyebrow">' + (isMe ? "Мои задачи" : "Сокомандник") + (isMe ? '<span class="me-badge">ЭТО ВЫ</span>' : "") + '</p><h1 class="ed" data-path="players.' + playerIndex + '.nick">' + esc(player.nick) + '</h1><p class="ed" data-path="players.' + playerIndex + '.role">' + esc(player.role) + "</p></div></section>";
-    html += '<div class="sidetabs">' + sideTab("T") + sideTab("CT") + "</div>";
-
-    html += '<section class="card"><h2>' + (isMe ? "Мои задачи" : "Задачи игрока") + "</h2><ul class=\"tasklist\">";
-    player.tasks.forEach((task, index) => {
-      html += '<li class="ed" data-path="players.' + playerIndex + ".tasks." + index + '">' + esc(task) + "</li>";
-    });
-    html += "</ul></section>";
-
-    html += '<section class="card"><h2>Позиции · ' + ui.side + "</h2>";
-    Object.keys(data.maps).forEach((mapId) => {
-      const map = mapById(mapId);
-      const position = (map.sides[ui.side].defaults || []).find((item) => item.player === player.id);
-      if (!position) return;
-      const positionIndex = map.sides[ui.side].defaults.indexOf(position);
-      const zone = zoneById(map, position.zone);
-      html += '<div class="minimap"><h3>' + esc(map.name) + (zone ? ' <span class="muted">· ' + esc(zone.name) + "</span>" : "") + "</h3>" + mapFrame(mapId, {
-        markers: markersFor(mapId, ui.side),
-        drawings: drawingsFor(mapId, ui.side),
-        side: ui.side,
-        focus: player.id,
-        dimOthers: true,
-        labelStyle: map.sides[ui.side].markerStyle,
-      });
-      html += '<p class="note"><b>' + (isMe ? "Моя точка:" : "Точка:") + '</b> <span class="ed" data-path="maps.' + mapId + ".sides." + ui.side + ".defaults." + positionIndex + '.note">' + esc(position.note) + '</span></p><p class="note"><a class="back" href="#/map/' + mapId + "/" + ui.side + '">Открыть доску ' + esc(map.name) + " →</a></p></div>";
-    });
-    html += "</section>";
-
-    const assigned = [];
-    Object.keys(data.maps).forEach((mapId) => {
-      ["T", "CT"].forEach((side) => {
-        (mapById(mapId).sides[side].nades || []).forEach((nade) => {
-          if (nade.by === player.id) assigned.push({ mapId, side, nade });
-        });
-      });
-    });
-
-    html += '<section class="card"><h2>' + (isMe ? "Мои гранаты" : "Гранаты игрока") + "</h2>";
-    if (!assigned.length) html += '<p class="muted">Нет назначенных гранат.</p>';
-    assigned.forEach((record) => {
-      const map = mapById(record.mapId);
-      const nadeIndex = map.sides[record.side].nades.indexOf(record.nade);
-      const from = zoneById(map, record.nade.from);
-      const to = zoneById(map, record.nade.to);
-      if (!from || !to) return;
-      html += '<details class="nade"><summary><span>' + (NADE_ICON[record.nade.type] || "•") + "</span><b>" + esc(record.nade.name) + '</b><span class="tag">' + esc(map.name) + " · " + record.side + "</span></summary>";
-      html += mapFrame(record.mapId, { arrows: [{ fx: from.x, fy: from.y, tx: to.x, ty: to.y, type: record.nade.type }] });
-      html += "<ol>" + record.nade.steps.map((step, index) => '<li class="ed" data-path="maps.' + record.mapId + ".sides." + record.side + ".nades." + nadeIndex + ".steps." + index + '">' + esc(step) + "</li>").join("") + "</ol>";
-      html += '<p class="note"><b>Задача:</b> <span class="ed" data-path="maps.' + record.mapId + ".sides." + record.side + ".nades." + nadeIndex + '.note">' + esc(record.nade.note) + "</span></p></details>";
-    });
-    html += "</section>";
-
-    html += '<section class="card"><h2>Контрольный список</h2><ul class="tasklist tips">';
-    player.tips.forEach((tip, index) => {
-      html += '<li class="ed" data-path="players.' + playerIndex + ".tips." + index + '">' + esc(tip) + "</li>";
-    });
-    html += "</ul>";
-    html += '<details class="nade eco-details"><summary><b>Эко-шпаргалка</b></summary><table class="eco"><tr><th>Режим</th><th>Когда</th><th>Закуп</th></tr>';
-    (data.eco || []).forEach((item) => {
-      html += "<tr><td><b>" + esc(item.name) + "</b></td><td>" + esc(item.when) + "</td><td>" + esc(item.what) + "</td></tr>";
-    });
-    html += "</table></details></section>";
-
-    if (isMe) {
-      html += '<div class="row"><button class="btn ghost tiny" id="changeProfile" type="button">Сменить мой профиль</button></div>';
-    } else {
-      html += '<div class="row"><button class="btn ghost tiny" id="makeMe" type="button">Это я — сделать моим профилем</button></div>';
-    }
-
-    view.innerHTML = html;
-    bindSideTabs(false);
-    bindMapImages();
-    applyEdit();
-    const changeBtn = $("#changeProfile");
-    if (changeBtn) changeBtn.onclick = () => {
-      if (confirm("Выбрать другой профиль?")) location.hash = "#/profile";
-    };
-    const makeMe = $("#makeMe");
-    if (makeMe) makeMe.onclick = () => {
-      store.players[team.id] = player.id;
-      save();
-      toast("Теперь это ваш профиль");
-      location.hash = "#/me";
-      route();
-    };
-    paintNav("player");
-    syncStickyTop();
-  }
-
-  function renderMapsPage() {
-    const team = activeTeam();
-    const view = $("#view");
-    const me = playerById(myPlayerId());
-    let html = '<section class="hero"><p class="eyebrow">' + esc(team.name) + (me ? " · вы: " + esc(me.nick) : "") + '</p><h1 class="ed" data-path="meta.title">' + esc(data.meta.title) + '</h1><p class="ed" data-path="meta.subtitle">' + esc(data.meta.subtitle) + "</p></section>";
-
-    html += '<section class="section"><div class="section-head"><div><h2>Карты</h2><p>Сторона ' + ui.side + ": позиции и пометки капитана поверх радара.</p></div></div>";
-    html += '<div class="sidetabs">' + sideTab("T") + sideTab("CT") + "</div>";
-    html += '<div class="mapcards">';
-    Object.keys(data.maps).forEach((mapId, index) => {
-      const map = data.maps[mapId];
-      html += '<a class="mapcard" href="#/map/' + mapId + "/" + ui.side + '"><div class="mapcard-thumb"><img class="map-card-photo" src="' + attr(map.image) + '?v=7" alt="Карта ' + attr(map.name) + '" loading="eager" decoding="async"><span class="mapcard-code">Карта ' + (index + 1) + '</span></div><div class="mapcard-info"><span class="mapcard-name">' + esc(map.name) + '</span><span class="mapcard-open">Открыть →</span></div></a>';
-    });
-    html += "</div></section>";
-
-    view.innerHTML = html;
-    $$(".stab").forEach((button) => {
-      button.onclick = () => { ui.side = button.dataset.side; renderMapsPage(); };
-    });
-    bindMapImages();
-    applyEdit();
-    paintNav("maps");
-    syncStickyTop();
-  }
-
-  function renderTeamPage() {
-    const team = activeTeam();
-    const view = $("#view");
-    const me = playerById(myPlayerId());
-    let html = '<section class="hero"><p class="eyebrow">' + esc(team.name) + '</p><h1>Команда</h1><p>' + (me ? "Вы: <b>" + esc(me.nick) + "</b>. Нажмите на сокомандника, чтобы посмотреть его задачи и позиции." : "Выберите себя, чтобы открыть личные задачи.") + "</p></section>";
-    html += '<section class="card"><h2>Состав</h2><div class="profile-pick">';
-    data.players.forEach((player, index) => {
-      html += '<a class="chip' + (player.id === myPlayerId() ? " on" : "") + '" style="--pc:' + safeColor(player.color) + '" href="#/player/' + attr(player.id) + '"><span class="chip-n">' + (index + 1) + '</span><span class="chip-t"><b>' + esc(player.nick) + (player.id === myPlayerId() ? " · вы" : "") + "</b><small>" + esc(player.role) + "</small></span></a>";
-    });
-    html += '</div><div class="row"><a class="btn ghost tiny" href="#/profile" style="text-decoration:none;display:inline-flex;align-items:center">Сменить мой профиль</a><button class="btn ghost tiny" id="lockApp" type="button">Выйти из команды</button></div><p class="muted">«Выйти» блокирует приложение: следующий вход — только по командному паролю.</p></section>';
-    view.innerHTML = html;
-    $("#lockApp").onclick = () => {
-      if (confirm("Заблокировать приложение на этом устройстве?")) lockTeam(true);
-    };
-    bindMapImages();
-    applyEdit();
-    paintNav("team");
-    syncStickyTop();
-  }
-
-  /* ================= страница карты ================= */
-  function tabButton(tab, label) {
-    return '<button class="tab ' + (ui.tab === tab ? "on" : "") + '" data-tab="' + tab + '" type="button">' + label + "</button>";
-  }
-
-  // Компактная панель: переносы вместо горизонтального скролла.
-  // «Шаг назад» и «Удалить» закреплены в липкой панели и всегда на виду.
-  function boardToolbar(sideData) {
-    const tools = [
-      ["select", "Выбор"],
-      ["arrow", "→ Стрелка"],
-      ["line", "— Линия"],
-      ["pen", "✎ От руки"],
-      ["number", "① Номер"],
-      ["text", "Текст"],
-    ];
-    const selectedDrawing = drawingsFor(ui.map, ui.side).find((drawing) => drawing.id === ui.selected);
-    const canEditText = selectedDrawing && (selectedDrawing.type === "text" || selectedDrawing.type === "number");
-    let html = '<div class="board-tools"><div class="tool-row"><div class="tool-block"><span class="tool-label">Рисование</span>';
-    tools.forEach((tool) => {
-      html += '<button class="tool-btn ' + (ui.drawTool === tool[0] ? "on" : "") + '" data-tool="' + tool[0] + '" type="button">' + tool[1] + "</button>";
-    });
-    html += '</div><div class="tool-block"><span class="tool-label">Цвет</span>';
-    COLORS.forEach((color) => {
-      html += '<button class="color-btn ' + (ui.drawColor === color ? "on" : "") + '" data-color="' + color + '" style="--swatch:' + color + '" title="Цвет линии" type="button"></button>';
-    });
-    html += '</div><div class="tool-block"><span class="tool-label">Управление</span>' +
-      '<button class="tool-btn keep" data-action="undo" type="button" ' + (sideData.drawings.length ? "" : "disabled") + ">Шаг назад</button>" +
-      '<button class="tool-btn keep" data-action="delete" type="button" ' + (ui.selected ? "" : "disabled") + ">Удалить</button>" +
-      '<button class="tool-btn" data-action="marker-style" type="button">Игроки: ' + (sideData.markerStyle === "nick" ? "ники" : "номера") + "</button>" +
-      '<button class="tool-btn" data-action="rename" type="button" ' + (canEditText ? "" : "disabled") + ">Переименовать</button>" +
-      '<button class="tool-btn" data-action="clear" type="button" ' + (sideData.drawings.length ? "" : "disabled") + ">Очистить</button></div></div>" +
-      '<div class="tool-help">Инструмент → проведите по карте. В режиме «Выбор» двигайте игроков и пометки. Колл-ауты ставьте вручную: текст, номера, линии и стрелки.</div></div>';
-    return html;
-  }
-
-  function renderMapPage() {
-    const map = mapById(ui.map);
-    const view = $("#view");
-    if (!map) { location.hash = "#/maps"; return; }
-    if (ui.tab !== "board" && ui.tab !== "nades" && ui.tab !== "plan") ui.tab = "board";
-    const sideData = map.sides[ui.side];
-    let html = '<div class="sticky-sub"><a class="back" href="#/maps">← К картам · ' + esc(map.name) + "</a></div>";
-    html += '<section class="map-page-head"><div><p class="eyebrow">Тактическая карта</p><h1>' + esc(map.name) + "</h1><p>" + (ui.side === "T" ? "Атака: позиции, маршруты и план выхода" : "Защита: позиции, ротации и план удержания") + '</p></div><div class="map-status"><span>Сторона ' + ui.side + "</span><span>Пометок: " + sideData.drawings.length + "</span></div></section>";
-    html += '<div class="sidetabs">' + sideTab("T") + sideTab("CT") + "</div>";
-    html += '<div class="tabs">' + tabButton("board", "Доска") + tabButton("nades", "Гранаты") + tabButton("plan", "План") + "</div>";
-
-    if (ui.tab === "board") {
-      html += '<section class="card board-shell"><div class="board-bar"><span class="board-title">Схема команды · ' + esc(map.name) + '</span><span class="board-mode">' + (editMode ? "Можно редактировать" : "Только просмотр") + "</span></div>";
-      if (editMode) html += boardToolbar(sideData);
-      html += '<div class="map-wrap">' + mapFrame(ui.map, {
-        markers: markersFor(ui.map, ui.side),
-        drawings: drawingsFor(ui.map, ui.side),
-        selected: ui.selected,
-        side: ui.side,
-        labelStyle: sideData.markerStyle,
-        editor: editMode,
-      }) + "</div>";
-      html += '<div class="board-footer"><p class="board-hint"><b>' + (editMode ? "Режим капитана:" : "Режим просмотра:") + "</b> " + (editMode ? "двигайте игроков, ставьте номера, подписи, линии и стрелки вручную." : "позиции и ручные пометки капитана поверх радара.") + '</p><div class="position-grid">';
-      sideData.defaults.forEach((position, index) => {
-        const player = playerById(position.player);
-        const zone = zoneById(map, position.zone);
-        html += '<a class="posrow" href="#/player/' + attr(position.player) + '" style="--pc:' + safeColor(player ? player.color : "#888888") + '"><b>' + esc(player ? player.nick : "Не назначен") + '</b><small class="pos-zone">' + esc(zone ? zone.name : position.zone) + '</small><small class="ed" data-path="maps.' + ui.map + ".sides." + ui.side + ".defaults." + index + '.note">' + esc(position.note) + "</small></a>";
-      });
-      html += "</div></div></section>";
-    }
-
-    if (ui.tab === "nades") {
-      html += '<section class="card"><h2>Гранаты · ' + ui.side + "</h2><p class=\"muted\">Откройте гранату: направление броска показано на радаре.</p>";
-      if (editMode) html += '<button class="btn tiny addNade" type="button">Добавить гранату</button>';
-      sideData.nades.forEach((nade, index) => {
-        const from = zoneById(map, nade.from);
-        const to = zoneById(map, nade.to);
-        if (!from || !to) return;
-        html += '<details class="nade" data-nade="' + index + '" ' + (ui.nade === index ? "open" : "") + '><summary><span>' + (NADE_ICON[nade.type] || "•") + '</span><b class="ed" data-path="maps.' + ui.map + ".sides." + ui.side + ".nades." + index + '.name">' + esc(nade.name) + '</b><span class="tag">' + esc(NADE_NAME[nade.type] || nade.type) + (nade.by ? " · " + esc((playerById(nade.by) || {}).nick || "") : "") + "</span>" + (editMode ? '<button class="del" data-del-nade="' + index + '" type="button">Удалить</button>' : "") + "</summary>";
-        html += mapFrame(ui.map, { arrows: [{ fx: from.x, fy: from.y, tx: to.x, ty: to.y, type: nade.type }] });
-        html += "<ol>" + nade.steps.map((step, stepIndex) => '<li class="ed" data-path="maps.' + ui.map + ".sides." + ui.side + ".nades." + index + ".steps." + stepIndex + '">' + esc(step) + "</li>").join("") + "</ol>";
-        html += '<p class="note"><b>Задача:</b> <span class="ed" data-path="maps.' + ui.map + ".sides." + ui.side + ".nades." + index + '.note">' + esc(nade.note) + "</span></p></details>";
-      });
-      html += "</section>";
-    }
-
-    if (ui.tab === "plan") {
-      html += '<section class="card"><h2>План стороны · ' + ui.side + '</h2><ol class="planlist">';
-      sideData.plan.forEach((item, index) => {
-        html += '<li class="ed" data-path="maps.' + ui.map + ".sides." + ui.side + ".plan." + index + '">' + esc(item) + "</li>";
-      });
-      html += "</ol></section>";
-    }
-
-    view.innerHTML = html;
-    bindSideTabs(true);
-    $$(".tabs .tab").forEach((button) => {
-      button.onclick = () => {
-        ui.tab = button.dataset.tab;
-        ui.nade = null;
-        ui.selected = null;
-        renderMapPage();
-      };
-    });
-    $$(".nade").forEach((details) => {
-      details.addEventListener("toggle", () => { if (details.open) ui.nade = Number(details.dataset.nade); });
-    });
-    $$("[data-del-nade]").forEach((button) => {
-      button.onclick = (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        if (!editMode || !confirm("Удалить эту гранату?")) return;
-        sideData.nades.splice(Number(button.dataset.delNade), 1);
-        save();
-        renderMapPage();
-      };
-    });
-    const addButton = $(".addNade");
-    if (addButton) addButton.onclick = () => addNade(ui.side);
-    const radar = $(".card .tactical-map");
-    if (radar && ui.tab === "board" && editMode) {
-      bindBoardToolbar();
-      bindBoardEditor(radar);
-    }
-    bindMapImages();
-    applyEdit();
-    paintNav("map");
-    syncStickyTop();
-  }
-
-  function addNade(side) {
-    if (!editMode) return;
-    const map = mapById(ui.map);
-    const nade = {
-      id: "nade-" + Date.now(),
-      type: "smoke",
-      name: "Новая граната",
-      by: data.players[0].id,
-      from: map.zones[0].id,
-      to: map.zones[1].id,
-      steps: ["Опишите исходную позицию и ориентир"],
-      note: "Опишите задачу гранаты",
-    };
-    map.sides[side].nades.push(nade);
-    ui.nade = map.sides[side].nades.length - 1;
-    save();
-    renderMapPage();
-  }
-
-  /* ================= редактор доски ================= */
-  function newDrawingId() {
-    return "draw-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 7);
-  }
-
-  function bindBoardToolbar() {
-    $$("[data-tool]").forEach((button) => {
-      button.onclick = () => {
-        ui.drawTool = button.dataset.tool;
-        ui.selected = null;
-        renderMapPage();
-      };
-    });
-
-    $$("[data-color]").forEach((button) => {
-      button.onclick = () => {
-        ui.drawColor = button.dataset.color;
-        const drawing = drawingsFor(ui.map, ui.side).find((item) => item.id === ui.selected);
-        if (drawing) {
-          drawing.color = ui.drawColor;
-          save();
-        }
-        renderMapPage();
-      };
-    });
-
-    $$("[data-action]").forEach((button) => {
-      button.onclick = () => boardAction(button.dataset.action);
-    });
-  }
-
-  function boardAction(action) {
-    const sideData = mapById(ui.map).sides[ui.side];
-    const drawings = drawingsFor(ui.map, ui.side);
-    const index = drawings.findIndex((drawing) => drawing.id === ui.selected);
-
-    if (action === "marker-style") {
-      sideData.markerStyle = sideData.markerStyle === "nick" ? "number" : "nick";
-      save();
-      renderMapPage();
-      return;
-    }
-    if (action === "delete" && index >= 0) {
-      drawings.splice(index, 1);
-      ui.selected = null;
-      save();
-      renderMapPage();
-      return;
-    }
-    if (action === "rename" && index >= 0) {
-      const drawing = drawings[index];
-      requestBoardText(drawing.type, drawing.text || "", (value) => {
-        drawing.text = value;
-        save();
-        renderMapPage();
-      });
-      return;
-    }
-    if (action === "undo" && drawings.length) {
-      drawings.pop();
-      ui.selected = null;
-      save();
-      renderMapPage();
-      return;
-    }
-    if (action === "clear" && drawings.length && confirm("Удалить все нарисованные линии и метки на этой стороне?")) {
-      sideData.drawings = [];
-      ui.selected = null;
-      save();
-      renderMapPage();
-    }
-  }
-
-  function requestBoardText(type, initialValue, onSave) {
-    const isNumber = type === "number";
-    closeModal();
-    const html = '<div class="modal" id="modal"><div class="modal-in narrow"><p class="modal-kicker">Пометка на карте</p><h3>' + (isNumber ? "Номер в обводке" : "Текст или ник") + '</h3><p class="muted">' + (isNumber ? "Введите число от 1 до 99." : "Короткая подпись поверх карты: колл-аут, ник, указание.") + '</p><form id="boardTextForm"><label class="field"><span>' + (isNumber ? "Номер" : "Подпись") + '</span><input id="boardTextInput" ' + (isNumber ? 'inputmode="numeric" maxlength="2"' : 'maxlength="24"') + ' value="' + attr(initialValue) + '" required></label><div class="form-error" id="boardTextError"></div><div class="row"><button class="btn" type="submit">Сохранить</button><button class="btn ghost" id="mClose" type="button">Отмена</button></div></form></div></div>';
-    document.body.insertAdjacentHTML("beforeend", html);
-    const input = $("#boardTextInput");
-    input.focus();
-    input.select();
-    $("#mClose").onclick = closeModal;
-    $("#modal").onclick = (event) => { if (event.target.id === "modal") closeModal(); };
-    $("#boardTextForm").onsubmit = (event) => {
-      event.preventDefault();
-      let value = input.value.trim();
-      if (isNumber) value = value.replace(/\D/g, "").slice(0, 2);
-      else value = value.slice(0, 24);
-      if (!value || (isNumber && (Number(value) < 1 || Number(value) > 99))) {
-        $("#boardTextError").textContent = isNumber ? "Нужно число от 1 до 99." : "Введите подпись.";
-        return;
-      }
-      closeModal();
-      onSave(value);
-    };
-  }
-
-  function bindBoardEditor(svg) {
-    svg.addEventListener("pointerdown", (event) => {
-      if (!editMode || event.button > 0) return;
-      const point = svgPoint(svg, event);
-      const drawingElement = event.target.closest("[data-drawing-id]");
-      const playerElement = event.target.closest(".pmk");
-
-      if (ui.drawTool === "select") {
-        event.preventDefault();
-        if (playerElement) {
-          ui.selected = null;
-          startPlayerDrag(event, svg, playerElement);
-        } else if (drawingElement) {
-          ui.selected = drawingElement.dataset.drawingId;
-          startDrawingDrag(event, svg, drawingElement);
+      '<div class="authwrap"><div class="authcard"><p class="autheye">CS2 TEAM PLAYBOOK</p><h1>Вход команды</h1>' +
+      '<p class="sub">Название команды и PIN — больше ничего не нужно.</p>' +
+      '<div class="authtabs"><button class="authtab' + (authMode === "player" ? " on" : "") + '" data-m="player" type="button">Игрок</button>' +
+      '<button class="authtab' + (authMode === "captain" ? " on" : "") + '" data-m="captain" type="button">Капитан</button></div>' +
+      '<form id="loginForm"><label class="field"><span>Название команды</span>' +
+      '<input id="liName" maxlength="40" autocomplete="off" placeholder="Например, БРАТЫ" required></label>' +
+      '<label class="field"><span>' + (authMode === "player" ? "PIN команды" : "PIN капитана") + "</span>" +
+      '<input id="liPin" type="password" inputmode="numeric" maxlength="32" autocomplete="off" placeholder="••••••" required></label>' +
+      '<div class="form-error" id="liErr"></div>' +
+      '<div class="btnrow"><button class="btn block" type="submit">Войти</button></div></form>' +
+      '<div class="authlinks"><button class="linklike" id="goCreate" type="button">Нет команды? Создать команду</button></div>' +
+      "</div></div>";
+    $$(".authtab").forEach((b) => { b.onclick = () => { authMode = b.dataset.m; viewLogin(); }; });
+    $("#goCreate").onclick = () => go("#/create");
+    $("#loginForm").onsubmit = async (e) => {
+      e.preventDefault();
+      const name = $("#liName").value, pin = $("#liPin").value;
+      const errBox = $("#liErr");
+      errBox.textContent = "";
+      try {
+        if (authMode === "player") {
+          await DB.login({ name, pin });
         } else {
-          ui.selected = null;
-          renderMapPage();
+          // Капитан: сначала вход по командному PIN невозможен — ищем команду и проверяем PIN капитана.
+          // Упрощение: пробуем login как игрок тем же PIN (если совпал — дальше claim не нужен),
+          // иначе ищем команду и вызываем claimCaptain после временного входа.
+          await captainDirectLogin(name, pin);
         }
+        afterEnter();
+      } catch (err) {
+        errBox.textContent = (err && err.code === "ASK_TEAM_PIN")
+          ? "С нового устройства сначала войдите как игрок (PIN команды), затем введите PIN капитана"
+          : ((err && err.message) || "Не получилось войти");
+      }
+    };
+    setTimeout(() => { const i = $("#liName"); if (i) i.focus(); }, 50);
+  }
+
+  async function captainDirectLogin(name, pin) {
+    // Пробуем командный PIN (вдруг капитан ввёл его) — затем повышаем права PIN капитана.
+    try {
+      await DB.login({ name, pin });
+      try { await DB.loginCaptain(pin); } catch (e) { /* остался игроком, ниже разберёмся */ }
+      if (DB.isCaptain()) return;
+      // Вошли как игрок, но капитанский PIN другой — нужен именно он.
+      DB.logout();
+      throw err2("NEED_CAP_PIN");
+    } catch (e) {
+      if (e && e.code === "NEED_CAP_PIN") {
+        // Вход игроком удался, а PIN капитана другой: пускаем как игрока и сразу просим PIN капитана.
+        await DB.login({ name, pin });
+        S.askCaptainPin = true;
         return;
       }
+      // Командный PIN не подошёл: может, это PIN капитана. Ищем команду локально/в облаке.
+      const found = await findTeamForCaptain(name, pin);
+      if (!found) throw e;
+    }
+  }
+  function err2(code) { const er = new Error(code); er.code = code; return er; }
 
-      if (ui.drawTool === "number" || ui.drawTool === "text") {
-        event.preventDefault();
-        const drawingType = ui.drawTool;
-        requestBoardText(drawingType, drawingType === "number" ? "1" : "", (value) => {
-          const drawing = {
-            id: newDrawingId(),
-            type: drawingType,
-            x: round1(point.x),
-            y: round1(point.y),
-            text: value,
-            color: ui.drawColor,
-          };
-          drawingsFor(ui.map, ui.side).push(drawing);
-          ui.selected = drawing.id;
-          save();
-          renderMapPage();
+  async function findTeamForCaptain(name, pin) {
+    // Local: сверяем captainPinHash напрямую через временный доступ адаптера.
+    if (DB.mode() === "local") {
+      const team = DB.adapter.findTeam(name);
+      if (!team) return false;
+      try {
+        await DB.adapter.claimCaptain(team.id, pin);
+      } catch (e) { return false; }
+      DB.team = DB.adapter.publicTeam(team);
+      DB.role = "captain";
+      DB.persistSession();
+      await DB.refresh();
+      return true;
+    }
+    // Cloud: вступаем через RPC claim только для участников; для капитана с нового
+    // устройства просим сначала командный PIN — показываем подсказку.
+    throw err2("ASK_TEAM_PIN");
+  }
+
+  function afterEnter() {
+    if (!DB.myPlayerId() && DB.cache.players.length) go("#/who");
+    else go("#/overview");
+    if (S.askCaptainPin) {
+      S.askCaptainPin = false;
+      setTimeout(() => askCaptainPin("Вы вошли как игрок. Введите PIN капитана для правок."), 400);
+    }
+  }
+
+  function askCaptainPin(sub, onOk) {
+    openSheet("PIN капитана",
+      (sub ? '<p class="muted tiny">' + esc(sub) + "</p>" : "") +
+      '<form id="capPinForm"><label class="field"><span>PIN капитана</span>' +
+      '<input id="capPin" type="password" inputmode="numeric" maxlength="32" autocomplete="off" required></label>' +
+      '<div class="form-error" id="capPinErr"></div></form>',
+      '<button class="btn ghost" data-x type="button">Отмена</button><button class="btn" data-ok type="button">Подтвердить</button>');
+    $("[data-x]").onclick = closeSheet;
+    const submit = async () => {
+      try {
+        await DB.loginCaptain($("#capPin").value);
+        closeSheet();
+        toast("Режим капитана включён", "ok");
+        render();
+        if (onOk) onOk();
+      } catch (e) { $("#capPinErr").textContent = (e && e.message) || "Неверный PIN"; }
+    };
+    $("[data-ok]").onclick = submit;
+    $("#capPinForm").onsubmit = (e) => { e.preventDefault(); submit(); };
+    setTimeout(() => $("#capPin").focus(), 50);
+  }
+
+  /* ---------- auth: create team ---------- */
+  function viewCreate() {
+    const view = $("#view");
+    view.innerHTML =
+      '<div class="authwrap"><div class="authcard"><p class="autheye">CS2 TEAM PLAYBOOK</p><h1>Новая команда</h1>' +
+      '<p class="sub">Капитан создаёт команду один раз и отправляет игрокам PIN.</p>' +
+      '<form id="crForm"><label class="field"><span>Название команды</span>' +
+      '<input id="crName" maxlength="40" autocomplete="off" placeholder="Например, БРАТЫ" required></label>' +
+      '<div class="field-row"><label class="field"><span>PIN команды</span>' +
+      '<input id="crPin" type="password" inputmode="numeric" minlength="4" maxlength="32" autocomplete="off" placeholder="Для игроков" required></label>' +
+      '<label class="field"><span>PIN капитана</span>' +
+      '<input id="crCapPin" type="password" inputmode="numeric" minlength="4" maxlength="32" autocomplete="off" placeholder="Только вам" required></label></div>' +
+      '<label class="field"><span>Имя капитана</span>' +
+      '<input id="crCap" maxlength="24" autocomplete="off" placeholder="Например, Max" required></label>' +
+      '<div class="form-error" id="crErr"></div>' +
+      '<div class="btnrow"><button class="btn block" type="submit">Создать команду</button></div></form>' +
+      '<div class="authlinks"><button class="linklike" id="goLogin" type="button">Уже есть команда? Войти</button></div>' +
+      "</div></div>";
+    $("#goLogin").onclick = () => go("#/login");
+    $("#crForm").onsubmit = async (e) => {
+      e.preventDefault();
+      const errBox = $("#crErr");
+      errBox.textContent = "";
+      const pin = $("#crPin").value, capPin = $("#crCapPin").value;
+      if (pin === capPin) { errBox.textContent = "PIN команды и PIN капитана должны различаться"; return; }
+      try {
+        await DB.createTeam(
+          { name: $("#crName").value, pin, captain: $("#crCap").value, captainPin: capPin },
+          (teamId) => Seed.seedTeam(teamId)
+        );
+        viewCreated(pin);
+      } catch (err) { errBox.textContent = (err && err.message) || "Не получилось создать"; }
+    };
+  }
+
+  function viewCreated(pin) {
+    const view = $("#view");
+    paintShell();
+    view.innerHTML =
+      '<div class="authwrap"><div class="authcard"><p class="autheye">ГОТОВО</p><h1>Команда создана</h1>' +
+      '<p class="sub">Отправьте игрокам название команды и этот код. Стартовый набор (карты, состав, тактики) уже загружен — меняйте всё под себя.</p>' +
+      '<div class="pinview"><small>Код команды для игроков</small><b>' + esc(pin) + "</b></div>" +
+      '<div class="btnrow"><button class="btn block" id="openPb" type="button">Открыть плейбук</button></div>' +
+      "</div></div>";
+    $("#openPb").onclick = () => afterEnter();
+  }
+
+  /* ---------- overview ---------- */
+  function sideBadge(side) {
+    if (side === "CT") return '<span class="badge side-ct">CT</span>';
+    if (side === "ANY") return '<span class="badge">T/CT</span>';
+    return '<span class="badge side-t">T</span>';
+  }
+  function tacticsOfMap(mapId, side) {
+    return DB.cache.tactics.filter((t) => (!mapId || t.map_id === mapId) && (!side || t.side === side));
+  }
+  function involvement(playerId) {
+    const tactics = [];
+    const tasks = [];
+    const nades = [];
+    DB.cache.tactics.forEach((t) => {
+      let hit = false;
+      (t.blocks || []).forEach((b) => {
+        (b.items || []).forEach((it) => {
+          if (it.playerId === playerId || it.by === playerId) {
+            hit = true;
+            if (b.type === "tasks") tasks.push({ tactic: t, item: it });
+            if (b.type === "grenades") nades.push({ tactic: t, item: it });
+          }
         });
-        return;
-      }
+        (b.markers || []).forEach((m) => { if (m.playerId === playerId) hit = true; });
+      });
+      if (hit) tactics.push(t);
+    });
+    return { tactics, tasks, nades };
+  }
 
-      if (ui.drawTool === "arrow" || ui.drawTool === "line") {
-        event.preventDefault();
-        startLineDraw(event, svg, point, ui.drawTool);
-        return;
-      }
+  function viewOverview() {
+    const view = $("#view");
+    const me = playerById(DB.myPlayerId());
+    const maps = DB.cache.maps.slice(0, 6);
+    const recentTactics = DB.cache.tactics.slice().sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0)).slice(0, 5);
+    const favs = DB.favs().slice(0, 8);
+    const feed = DB.cache.activity.slice(0, 8);
 
-      if (ui.drawTool === "pen") {
-        event.preventDefault();
-        startPenDraw(event, svg, point);
-      }
+    let html = '<div class="pagehead"><div><h1>' + esc(DB.team.name) + "</h1>" +
+      '<p class="sub">' + (me ? "Привет, " + esc(me.name) : "Обзор команды") + " · " + DB.cache.players.length + " игр. · " +
+      DB.cache.maps.length + " карт · " + DB.cache.tactics.length + " такт.</p></div>" +
+      (isCap() ? '<div class="actions"><button class="btn tiny" data-newtactic type="button">+ Тактика</button></div>' : "") + "</div>";
+
+    html += '<div class="ovgrid two">';
+    // Состав
+    html += '<div class="sec"><div class="sec-head"><h2>Состав</h2><button class="more" data-go="#/players" type="button">Все ›</button></div><div class="rosterchips">';
+    if (!DB.cache.players.length) html += '<div class="empty">Пока пусто.</div>';
+    DB.cache.players.forEach((p) => {
+      html += '<a class="rchip" style="--pc:' + esc(p.color || "#e8a72f") + '" href="#/player/' + p.id + '">' + esc(p.name) +
+        (p.role ? " <small>" + esc(p.role) + "</small>" : "") + (me && me.id === p.id ? " <small>· вы</small>" : "") + "</a>";
+    });
+    html += "</div></div>";
+
+    // Мой профиль / выбор себя
+    if (me) {
+      const inv = involvement(me.id);
+      html += '<div class="sec"><div class="sec-head"><h2>Твой профиль</h2><button class="more" data-go="#/me" type="button">Открыть ›</button></div><div class="sec-pad">' +
+        "<div><b>" + esc(me.name) + "</b>" + (me.role ? ' · <span class="muted">' + esc(me.role) + "</span>" : "") + "</div>" +
+        '<div class="tiny muted">Тактики: ' + inv.tactics.length + " · Задачи: " + inv.tasks.length + " · Гранаты: " + inv.nades.length + "</div></div></div>";
+    } else if (DB.cache.players.length) {
+      html += '<div class="sec"><div class="sec-head"><h2>Кто ты?</h2></div><div class="sec-pad"><div class="btnrow" style="margin-top:0">';
+      DB.cache.players.forEach((p) => {
+        html += '<button class="btn ghost tiny" data-pick="' + p.id + '" type="button">' + esc(p.name) + "</button>";
+      });
+      html += "</div></div></div>";
+    }
+
+    // Быстрый доступ к картам
+    html += '<div class="sec"><div class="sec-head"><h2>Карты</h2><button class="more" data-go="#/maps" type="button">Все ›</button></div><div class="sec-body">';
+    if (!DB.cache.maps.length) html += '<div class="empty">Карт пока нет.</div>';
+    maps.forEach((m) => {
+      html += '<a class="row" href="#/map/' + m.id + '">' + mapThumb(m, 52) + '<span class="row-main"><b>' + esc(m.name) +
+        "</b><small>" + tacticsOfMap(m.id).length + " такт.</small></span><span class=\"row-arrow\">›</span></a>";
+    });
+    html += "</div></div>";
+
+    // Активные тактики (недавно обновлённые)
+    html += '<div class="sec"><div class="sec-head"><h2>Активные тактики</h2><button class="more" data-go="#/tactics" type="button">Все ›</button></div><div class="sec-body">';
+    if (!recentTactics.length) html += '<div class="empty">Тактик пока нет.</div>';
+    recentTactics.forEach((t) => {
+      const m = mapById(t.map_id);
+      html += tacticRowHTML(t, m);
+    });
+    html += "</div></div>";
+
+    // Избранное
+    if (favs.length) {
+      html += '<div class="sec"><div class="sec-head"><h2>★ Избранное</h2></div><div class="sec-body">';
+      favs.forEach((f) => {
+        html += '<button class="row" data-favgo="' + f.kind + ":" + esc(f.id) + '" type="button"><span class="row-main"><b>' + esc(f.title) +
+          "</b><small>" + esc(favKindName(f.kind)) + "</small></span><span class=\"row-arrow\">›</span></button>";
+      });
+      html += "</div></div>";
+    }
+
+    // Последние изменения
+    html += '<div class="sec"><div class="sec-head"><h2>Последние изменения</h2></div><div class="sec-body">';
+    if (!feed.length) html += '<div class="empty">Пока тихо.</div>';
+    feed.forEach((a) => { html += activityRowHTML(a); });
+    html += "</div></div>";
+    html += "</div>";
+
+    view.innerHTML = html;
+    bindOverview(view);
+  }
+
+  function bindOverview(view) {
+    $$("[data-go]", view).forEach((b) => { b.onclick = () => go(b.dataset.go); });
+    $$("[data-pick]", view).forEach((b) => {
+      b.onclick = () => {
+        DB.setMyPlayer(b.dataset.pick);
+        toast("Привет, " + (myName() || ""), "ok");
+        render();
+      };
+    });
+    $$("[data-favgo]", view).forEach((b) => {
+      b.onclick = () => { const [k, id] = b.dataset.favgo.split(":"); openRef(k, id); };
+    });
+    $$("[data-act]", view).forEach((b) => {
+      b.onclick = () => { const [k, id] = b.dataset.act.split(":"); if (k && id) openRef(k, id); };
+    });
+    const nt = $("[data-newtactic]", view);
+    if (nt) nt.onclick = () => sheetNewTactic(null);
+  }
+
+  function tacticRowHTML(t, m) {
+    return '<a class="row" href="#/tactic/' + t.id + '"><span class="row-main"><b>' + esc(t.name) + "</b><small>" +
+      esc((m ? m.name + " · " : "") + (t.category || "Тактика")) + "</small></span>" +
+      '<span class="row-side">' + sideBadge(t.side) + '<span class="row-arrow">›</span></span></a>';
+  }
+  function activityRowHTML(a) {
+    const clickable = a.ref_kind && a.ref_id;
+    const inner = "<time>" + fmtTime(a.ts) + "</time><span>" + (a.actor ? "<b>" + esc(a.actor) + "</b> — " : "") + esc(a.text) +
+      ' <span class="tiny muted">' + fmtRel(a.ts) + "</span></span>";
+    if (clickable) return '<div class="actrow"><button data-act="' + a.ref_kind + ":" + esc(a.ref_id) + '" type="button">' + inner + "</button></div>";
+    return '<div class="actrow">' + inner + "</div>";
+  }
+  function favKindName(kind) {
+    return kind === "tactic" ? "Тактика" : kind === "player" ? "Игрок" : kind === "map" ? "Карта" : "Материал";
+  }
+  function mapThumb(m, w) {
+    if (m && m.image) return '<img class="mapthumb" src="' + esc(m.image) + '" alt="" loading="lazy">';
+    return '<span class="mapthumb" style="display:inline-block"></span>';
+  }
+
+  /* ---------- maps ---------- */
+  function viewMaps() {
+    const view = $("#view");
+    let html = '<div class="pagehead"><div><h1>Карты</h1><p class="sub">' + DB.cache.maps.length + " шт. · откройте карту, затем тактику</p></div>" +
+      (isCap() ? '<div class="actions"><button class="btn tiny" data-addmap type="button">+ Карта</button></div>' : "") + "</div>";
+    html += '<div class="sec"><div class="sec-body">';
+    if (!DB.cache.maps.length) html += '<div class="empty">Карт пока нет.' + (isCap() ? " Добавьте первую." : "") + "</div>";
+    DB.cache.maps.forEach((m) => {
+      const n = tacticsOfMap(m.id).length;
+      html += '<div class="row" style="cursor:default"><a class="row-main" style="display:flex;gap:10px;align-items:center;text-decoration:none;flex:1;min-width:0" href="#/map/' + m.id + '">' +
+        mapThumb(m, 52) + '<span style="min-width:0"><b style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(m.name) +
+        "</b><small class=\"muted\">" + n + " такт.</small></span></a>" +
+        '<span class="row-side"><button class="starbtn' + (DB.isFav("map", m.id) ? " on" : "") + '" data-fav="map:' + m.id + '" type="button">★</button>' +
+        (isCap() ? '<button class="menubtn" data-mapmenu="' + m.id + '" type="button">⋮</button>' : '<a class="row-arrow" href="#/map/' + m.id + '" style="text-decoration:none">›</a>') + "</span></div>";
+    });
+    html += "</div></div>";
+    view.innerHTML = html;
+    const add = $("[data-addmap]", view);
+    if (add) add.onclick = () => sheetMap(null);
+    $$("[data-fav]", view).forEach((b) => {
+      b.onclick = (e) => {
+        e.preventDefault();
+        const [kind, id] = b.dataset.fav.split(":");
+        const m = mapById(id);
+        DB.toggleFav(kind, id, m ? m.name : "");
+        render();
+      };
+    });
+    $$("[data-mapmenu]", view).forEach((b) => {
+      b.onclick = (e) => { e.stopPropagation(); mapMenu(b, b.dataset.mapmenu); };
     });
   }
 
-  function startLineDraw(event, svg, start, type) {
-    const preview = document.createElementNS("http://www.w3.org/2000/svg", "line");
-    preview.setAttribute("class", "preview-line");
-    preview.setAttribute("stroke", ui.drawColor);
-    preview.setAttribute("x1", start.x);
-    preview.setAttribute("y1", start.y);
-    preview.setAttribute("x2", start.x);
-    preview.setAttribute("y2", start.y);
-    svg.appendChild(preview);
-    let end = start;
+  function mapMenu(anchor, id) {
+    const m = mapById(id);
+    if (!m) return;
+    const items = [
+      { label: "Открыть", onClick: () => go("#/map/" + id) },
+      { label: "Изменить", onClick: () => sheetMap(m) },
+      { label: "＋ Тактика на этой карте", onClick: () => sheetNewTactic(id) },
+      { sep: true },
+      { label: "Выше", onClick: () => moveRow("maps", id, -1) },
+      { label: "Ниже", onClick: () => moveRow("maps", id, 1) },
+      { sep: true },
+      { label: "Удалить", danger: true, onClick: () => confirmDlg('Удалить карту «' + m.name + "»?", () => commit('удалил карту «' + m.name + "»", null, () => DB.del("maps", id))) },
+    ];
+    openMenu(anchor, items);
+  }
 
-    const move = (moveEvent) => {
-      end = svgPoint(svg, moveEvent);
-      preview.setAttribute("x2", end.x);
-      preview.setAttribute("y2", end.y);
-    };
-    const up = () => {
-      removeWindowDrag(move, up);
-      preview.remove();
-      const distance = Math.hypot(end.x - start.x, end.y - start.y);
-      if (distance < 2) return;
-      const drawing = {
-        id: newDrawingId(), type,
-        x1: round1(start.x), y1: round1(start.y), x2: round1(end.x), y2: round1(end.y),
-        color: ui.drawColor,
+  async function moveRow(table, id, dir) {
+    const rows = DB.cache[table].slice();
+    const i = rows.findIndex((r) => r.id === id);
+    const j = i + dir;
+    if (i < 0 || j < 0 || j >= rows.length) return;
+    const tmp = rows[i]; rows[i] = rows[j]; rows[j] = tmp;
+    await commit(null, null, () => DB.reorder(table, rows.map((r) => r.id)));
+  }
+
+  function viewMap(id) {
+    const m = mapById(id);
+    const view = $("#view");
+    if (!m) { go("#/maps"); return; }
+    const tT = tacticsOfMap(id, "T"), tCT = tacticsOfMap(id, "CT"), tAny = tacticsOfMap(id, "ANY");
+    const mats = DB.cache.materials.filter((x) => x.map_id === id);
+    let html = '<a class="backlink" href="#/maps">← Карты</a><div class="pagehead"><div><h1>' + esc(m.name) + "</h1>" +
+      '<p class="sub">' + (tT.length + tCT.length + tAny.length) + " такт. · " + mats.length + " матер.</p></div>" +
+      '<div class="actions"><button class="starbtn' + (DB.isFav("map", m.id) ? " on" : "") + '" data-fav type="button" style="font-size:20px">★</button>' +
+      (isCap() ? '<button class="btn tiny" data-addt type="button">+ Тактика</button><button class="menubtn" data-mm type="button">⋮</button>' : "") + "</div></div>";
+    if (m.image) html += '<div class="sec"><div class="thumbs" style="padding:12px"><button class="thumb" data-full type="button"><img src="' + esc(m.image) + '" alt=""><span>Открыть карту</span></button></div></div>';
+    html += sideSection("Сторона T", tT, m);
+    html += sideSection("Сторона CT", tCT, m);
+    if (tAny.length) html += sideSection("Обе стороны", tAny, m);
+    if (mats.length) {
+      html += '<div class="sec"><div class="sec-head"><h2>Материалы карты</h2></div><div class="sec-body">';
+      mats.forEach((x) => { html += materialRowHTML(x, true); });
+      html += "</div></div>";
+    }
+    view.innerHTML = html;
+    $("[data-fav]", view).onclick = () => { DB.toggleFav("map", m.id, m.name); render(); };
+    const full = $("[data-full]", view);
+    if (full) full.onclick = () => openViewer(m.image, m.name);
+    const addt = $("[data-addt]", view);
+    if (addt) addt.onclick = () => sheetNewTactic(m.id);
+    const mm = $("[data-mm]", view);
+    if (mm) mm.onclick = (e) => { e.stopPropagation(); mapMenu(mm, m.id); };
+    bindMaterialRows(view);
+  }
+
+  function sideSection(title, list, m) {
+    let html = '<div class="sec"><div class="sec-head"><h2>' + esc(title) + " · " + list.length + "</h2></div><div class=\"sec-body\">";
+    if (!list.length) html += '<div class="empty">Пусто.</div>';
+    list.forEach((t) => { html += tacticRowHTML(t, m); });
+    return html + "</div></div>";
+  }
+
+  /* ---------- tactics list + filters ---------- */
+  const CATEGORIES = ["Execute", "Default", "Retake", "Split", "Control", "Utility", "Pistol", "Eco", "Force"];
+  function viewTactics() {
+    const view = $("#view");
+    const f = S.tfilter;
+    const cats = [];
+    DB.cache.tactics.forEach((t) => { if (t.category && cats.indexOf(t.category) < 0) cats.push(t.category); });
+    let html = '<div class="pagehead"><div><h1>Тактики</h1><p class="sub">' + DB.cache.tactics.length + " шт.</p></div>" +
+      (isCap() ? '<div class="actions"><button class="btn tiny" data-newt type="button">+ Тактика</button></div>' : "") + "</div>";
+    // Фильтры: карта
+    html += '<div class="chiprow"><button class="chip' + (!f.map ? " on" : "") + '" data-f="map:" type="button">Все карты</button>';
+    DB.cache.maps.forEach((m) => {
+      html += '<button class="chip' + (f.map === m.id ? " on" : "") + '" data-f="map:' + m.id + '" type="button">' + esc(m.name) + "</button>";
+    });
+    html += "</div>";
+    // Фильтры: сторона + категория
+    html += '<div class="chiprow"><button class="chip' + (!f.side ? " on" : "") + '" data-f="side:" type="button">T/CT</button>' +
+      '<button class="chip' + (f.side === "T" ? " on" : "") + '" data-f="side:T" type="button">T</button>' +
+      '<button class="chip' + (f.side === "CT" ? " on" : "") + '" data-f="side:CT" type="button">CT</button></div>';
+    if (cats.length) {
+      html += '<div class="chiprow"><button class="chip' + (!f.cat ? " on" : "") + '" data-f="cat:" type="button">Все типы</button>';
+      cats.forEach((c) => {
+        html += '<button class="chip' + (f.cat === c ? " on" : "") + '" data-f="cat:' + esc(c) + '" type="button">' + esc(c) + "</button>";
+      });
+      html += "</div>";
+    }
+    const list = DB.cache.tactics.filter((t) =>
+      (!f.map || t.map_id === f.map) && (!f.side || t.side === f.side || t.side === "ANY") && (!f.cat || t.category === f.cat));
+    html += '<div class="sec"><div class="sec-body">';
+    if (!list.length) html += '<div class="empty">Ничего не найдено. Попробуйте смягчить фильтры.</div>';
+    // Группируем по картам для читаемости.
+    const groups = {};
+    list.forEach((t) => {
+      const key = t.map_id || "none";
+      (groups[key] = groups[key] || []).push(t);
+    });
+    Object.keys(groups).forEach((key) => {
+      const m = mapById(key);
+      if (!f.map) html += '<div class="sec-head"><h2>' + esc(m ? m.name : "Без карты") + "</h2></div>";
+      groups[key].forEach((t) => { html += tacticRowHTML(t, m); });
+    });
+    html += "</div></div>";
+    view.innerHTML = html;
+    $$("[data-f]", view).forEach((b) => {
+      b.onclick = () => {
+        const [k, v] = b.dataset.f.split(/:(.+)/);
+        S.tfilter[k] = v || "";
+        render();
       };
-      drawingsFor(ui.map, ui.side).push(drawing);
-      ui.selected = drawing.id;
-      save();
-      renderMapPage();
-    };
-    addWindowDrag(move, up);
+    });
+    const nt = $("[data-newt]", view);
+    if (nt) nt.onclick = () => sheetNewTactic(f.map || null);
   }
 
-  function startPenDraw(event, svg, start) {
-    const preview = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
-    preview.setAttribute("class", "preview-line");
-    preview.setAttribute("stroke", ui.drawColor);
-    svg.appendChild(preview);
-    const points = [[round1(start.x), round1(start.y)]];
-    preview.setAttribute("points", points[0].join(","));
-
-    const move = (moveEvent) => {
-      const point = svgPoint(svg, moveEvent);
-      const last = points[points.length - 1];
-      if (Math.hypot(point.x - last[0], point.y - last[1]) < 0.65) return;
-      points.push([round1(point.x), round1(point.y)]);
-      preview.setAttribute("points", points.map((item) => item.join(",")).join(" "));
+  /* ---------- new / edit tactic ---------- */
+  function sheetNewTactic(presetMapId) {
+    if (!isCap()) return;
+    const maps = DB.cache.maps;
+    const templates = DB.cache.templates;
+    openSheet("Новая тактика",
+      '<form id="ntForm">' +
+      '<label class="field"><span>Название</span><input id="ntName" maxlength="60" placeholder="A Execute" required></label>' +
+      '<div class="field-row"><label class="field"><span>Карта</span><select id="ntMap">' +
+      '<option value="">— Без карты —</option>' + maps.map((m) => '<option value="' + m.id + '"' + (presetMapId === m.id ? " selected" : "") + ">" + esc(m.name) + "</option>").join("") + "</select></label>" +
+      '<label class="field"><span>Сторона</span><select id="ntSide"><option value="T">T</option><option value="CT">CT</option><option value="ANY">Обе</option></select></label></div>' +
+      '<div class="field-row"><label class="field"><span>Категория</span><input id="ntCat" list="catList" maxlength="24" placeholder="Execute"></label>' +
+      '<label class="field"><span>Шаблон блоков</span><select id="ntTpl"><option value="">Пустая</option>' +
+      templates.map((t) => '<option value="' + t.id + '">' + esc(t.name) + "</option>").join("") + "</select></label></div>" +
+      '<datalist id="catList">' + CATEGORIES.map((c) => "<option>" + c + "</option>").join("") + "</datalist>" +
+      '<label class="field"><span>Описание</span><textarea id="ntDesc" placeholder="Замысел тактики…"></textarea></label>' +
+      '<div class="form-error" id="ntErr"></div></form>',
+      '<button class="btn ghost" data-x type="button">Отмена</button><button class="btn" data-ok type="button">Создать</button>');
+    $("[data-x]").onclick = closeSheet;
+    $("[data-ok]").onclick = async () => {
+      const name = $("#ntName").value.trim();
+      if (!name) { $("#ntErr").textContent = "Введите название"; return; }
+      const tpl = templates.find((t) => t.id === $("#ntTpl").value);
+      const blocks = tpl ? reIdBlocks(clone(tpl.blocks)) : [];
+      const created = await commit('создал тактику «' + name + "»", null, () => DB.save("tactics", {
+        map_id: $("#ntMap").value || null,
+        name, side: $("#ntSide").value, category: $("#ntCat").value.trim(),
+        description: $("#ntDesc").value.trim(), blocks,
+      }));
+      if (created) { closeSheet(); go("#/tactic/" + created.id); }
     };
-    const up = () => {
-      removeWindowDrag(move, up);
-      preview.remove();
-      if (points.length < 2) return;
-      const drawing = { id: newDrawingId(), type: "pen", points, color: ui.drawColor };
-      drawingsFor(ui.map, ui.side).push(drawing);
-      ui.selected = drawing.id;
-      save();
-      renderMapPage();
-    };
-    addWindowDrag(move, up);
+  }
+  function reIdBlocks(blocks) {
+    (blocks || []).forEach((b) => {
+      b.id = uid("b");
+      (b.items || []).forEach((it) => { it.id = uid("i"); });
+      (b.markers || []).forEach((m) => { m.id = uid("m"); });
+      (b.drawings || []).forEach((d) => { d.id = uid("d"); });
+    });
+    return blocks;
   }
 
-  function startPlayerDrag(event, svg, element) {
-    const map = mapById(ui.map);
-    const position = map.sides[ui.side].defaults[Number(element.dataset.defaultIndex)];
-    if (!position) return;
-    const zone = zoneById(map, position.zone) || { x: 50, y: 50 };
-    let finalPoint = { x: zone.x + (position.dx || 0), y: zone.y + (position.dy || 0) };
-
-    const move = (moveEvent) => {
-      finalPoint = svgPoint(svg, moveEvent);
-      element.setAttribute("transform", "translate(" + finalPoint.x + "," + finalPoint.y + ")");
+  function sheetEditTactic(t) {
+    if (!isCap()) return;
+    openSheet("Изменить тактику",
+      '<form id="etForm"><label class="field"><span>Название</span><input id="etName" maxlength="60" value="' + esc(t.name) + '" required></label>' +
+      '<div class="field-row"><label class="field"><span>Карта</span><select id="etMap"><option value="">— Без карты —</option>' +
+      DB.cache.maps.map((m) => '<option value="' + m.id + '"' + (t.map_id === m.id ? " selected" : "") + ">" + esc(m.name) + "</option>").join("") + "</select></label>" +
+      '<label class="field"><span>Сторона</span><select id="etSide">' +
+      ["T", "CT", "ANY"].map((s) => '<option value="' + s + '"' + (t.side === s ? " selected" : "") + ">" + (s === "ANY" ? "Обе" : s) + "</option>").join("") + "</select></label></div>" +
+      '<label class="field"><span>Категория</span><input id="etCat" list="catList" maxlength="24" value="' + esc(t.category || "") + '"></label>' +
+      '<datalist id="catList">' + CATEGORIES.map((c) => "<option>" + c + "</option>").join("") + "</datalist></form>",
+      '<button class="btn ghost" data-x type="button">Отмена</button><button class="btn" data-ok type="button">Сохранить</button>');
+    $("[data-x]").onclick = closeSheet;
+    $("[data-ok]").onclick = async () => {
+      const name = $("#etName").value.trim();
+      if (!name) return;
+      const ok = await commit('изменил тактику «' + name + "»", { kind: "tactic", id: t.id }, () => DB.save("tactics", {
+        id: t.id, name, map_id: $("#etMap").value || null, side: $("#etSide").value, category: $("#etCat").value.trim(),
+      }));
+      if (ok) closeSheet();
     };
-    const up = () => {
-      removeWindowDrag(move, up);
-      position.dx = round1(finalPoint.x - zone.x);
-      position.dy = round1(finalPoint.y - zone.y);
-      save();
-      renderMapPage();
-    };
-    addWindowDrag(move, up);
   }
 
-  function startDrawingDrag(event, svg, element) {
-    const drawings = drawingsFor(ui.map, ui.side);
-    const drawing = drawings.find((item) => item.id === element.dataset.drawingId);
-    if (!drawing) return;
-    element.classList.add("selected");
-    const start = svgPoint(svg, event);
-    const bounds = drawingBounds(drawing);
-    let delta = { x: 0, y: 0 };
-
-    const move = (moveEvent) => {
-      const point = svgPoint(svg, moveEvent);
-      delta.x = clamp(point.x - start.x, -bounds.minX, 100 - bounds.maxX);
-      delta.y = clamp(point.y - start.y, -bounds.minY, 100 - bounds.maxY);
-      element.setAttribute("transform", "translate(" + delta.x + "," + delta.y + ")");
-    };
-    const up = () => {
-      removeWindowDrag(move, up);
-      shiftDrawing(drawing, delta.x, delta.y);
-      save();
-      renderMapPage();
-    };
-    addWindowDrag(move, up);
+  async function duplicateTactic(id) {
+    const t = tacticById(id);
+    if (!t || !isCap()) return;
+    const copy = clone(t);
+    delete copy.id;
+    copy.name = t.name + " 2";
+    reIdBlocks(copy.blocks);
+    const created = await commit('дублировал тактику «' + t.name + "»", null, () => DB.save("tactics", copy));
+    if (created) go("#/tactic/" + created.id);
   }
 
-  function drawingBounds(drawing) {
-    if (drawing.type === "arrow" || drawing.type === "line") {
-      return { minX: Math.min(drawing.x1, drawing.x2), maxX: Math.max(drawing.x1, drawing.x2), minY: Math.min(drawing.y1, drawing.y2), maxY: Math.max(drawing.y1, drawing.y2) };
+  function sheetSaveTemplate(t) {
+    if (!isCap()) return;
+    openSheet("Сохранить как шаблон",
+      '<label class="field"><span>Название шаблона</span><input id="tplName" maxlength="60" value="' + esc(t.name) + '"></label>',
+      '<button class="btn ghost" data-x type="button">Отмена</button><button class="btn" data-ok type="button">Сохранить</button>');
+    $("[data-x]").onclick = closeSheet;
+    $("[data-ok]").onclick = async () => {
+      const name = $("#tplName").value.trim() || t.name;
+      const ok = await commit('создал шаблон «' + name + "»", null, () => DB.save("templates", { name, blocks: reIdBlocks(clone(t.blocks || [])) }));
+      if (ok) closeSheet();
+    };
+  }
+
+  /* ---------- map sheet ---------- */
+  function sheetMap(m) {
+    if (!isCap()) return;
+    const isNew = !m;
+    m = m || { name: "", image: "" };
+    const presets = [
+      ["", "Без изображения"],
+      ["assets/maps/mirage.png", "Mirage (встроенный радар)"],
+      ["assets/maps/ancient.png", "Ancient (встроенный радар)"],
+      ["assets/maps/dust2.png", "Dust 2 (встроенный радар)"],
+    ];
+    openSheet(isNew ? "Новая карта" : "Изменить карту",
+      '<label class="field"><span>Название</span><input id="mpName" maxlength="40" value="' + esc(m.name) + '" placeholder="Mirage"></label>' +
+      '<label class="field"><span>Изображение радара</span><select id="mpPreset">' +
+      presets.map((p) => '<option value="' + p[0] + '"' + (m.image === p[0] ? " selected" : "") + ">" + p[1] + "</option>").join("") +
+      '<option value="__custom">Своя ссылка…</option></select></label>' +
+      '<label class="field" id="mpCustomWrap" hidden><span>Ссылка на изображение</span><input id="mpCustom" maxlength="500" value="' + esc(m.image || "") + '" placeholder="https://…"></label>',
+      '<button class="btn ghost" data-x type="button">Отмена</button><button class="btn" data-ok type="button">Сохранить</button>');
+    const preset = $("#mpPreset");
+    const syncCustom = () => { $("#mpCustomWrap").hidden = preset.value !== "__custom"; };
+    preset.onchange = syncCustom;
+    if (m.image && !presets.some((p) => p[0] === m.image)) { preset.value = "__custom"; syncCustom(); }
+    $("[data-x]").onclick = closeSheet;
+    $("[data-ok]").onclick = async () => {
+      const name = $("#mpName").value.trim();
+      if (!name) return;
+      const image = preset.value === "__custom" ? $("#mpCustom").value.trim() : preset.value;
+      const payload = { name, image };
+      if (!isNew) payload.id = m.id;
+      const saved = await commit(isNew ? 'добавил карту «' + name + "»" : 'изменил карту «' + name + "»", isNew ? null : { kind: "map", id: m.id }, () => DB.save("maps", payload));
+      if (saved) { closeSheet(); if (isNew) go("#/map/" + saved.id); }
+    };
+  }
+
+  /* ---------- tactic detail ---------- */
+  const BLOCK_NAMES = { roster: "Состав", tasks: "Задачи", grenades: "Гранаты", board: "Схема", image: "Изображения", video: "Видео", note: "Заметки" };
+  const NADE_ICON = { smoke: "💨", molly: "🔥", flash: "⚡" };
+  const NADE_NAME = { smoke: "Смouk", molly: "Молотов", flash: "Флешка" };
+  function nadeName(k) { return k === "smoke" ? "Смоук" : k === "molly" ? "Молотов" : k === "flash" ? "Флешка" : "Граната"; }
+
+  function viewTactic(id) {
+    const t = tacticById(id);
+    const view = $("#view");
+    if (!t) { go("#/tactics"); return; }
+    const m = mapById(t.map_id);
+    let html = '<a class="backlink" href="' + (m ? "#/map/" + m.id : "#/tactics") + '">← ' + esc(m ? m.name : "Тактики") + "</a>";
+    html += '<div class="pagehead"><div><h1>' + esc(t.name) + "</h1>" +
+      '<p class="sub">' + esc([m ? m.name : null, t.side === "ANY" ? "T/CT" : t.side, t.category || null].filter(Boolean).join(" / ")) +
+      (t.updated_at ? " · обновлено " + fmtRel(t.updated_at) : "") + "</p></div>" +
+      '<div class="actions"><button class="starbtn' + (DB.isFav("tactic", t.id) ? " on" : "") + '" data-fav type="button" style="font-size:20px">★</button>' +
+      (isCap() ? '<button class="menubtn" data-tmenu type="button">⋮</button>' : "") + "</div></div>";
+
+    if (t.description || isCap()) {
+      html += '<div class="sec"><div class="sec-head"><h2>Описание</h2>' +
+        (isCap() ? '<button class="more" data-editdesc type="button">Изменить</button>' : "") + "</div>" +
+        (t.description ? '<div class="desc">' + esc(t.description) + "</div>" : '<div class="empty">Описания нет.</div>') + "</div>";
     }
-    if (drawing.type === "pen" && drawing.points.length) {
-      const xs = drawing.points.map((point) => point[0]);
-      const ys = drawing.points.map((point) => point[1]);
-      return { minX: Math.min.apply(null, xs), maxX: Math.max.apply(null, xs), minY: Math.min.apply(null, ys), maxY: Math.max.apply(null, ys) };
+
+    html += '<div class="sec" id="blocksSec"><div class="sec-head"><h2>Блоки · ' + (t.blocks || []).length + "</h2></div><div>";
+    const blocks = (t.blocks || []).filter((b) => !b.hidden || isCap());
+    if (!blocks.length) html += '<div class="empty">Блоков пока нет.' + (isCap() ? " Добавьте первый ниже." : "") + "</div>";
+    blocks.forEach((b) => { html += blockHTML(t, b); });
+    html += "</div>";
+    if (isCap()) {
+      html += '<div class="addbar"><button class="addbtn" data-add="roster" type="button">+ Состав</button>' +
+        '<button class="addbtn" data-add="tasks" type="button">+ Задачи</button>' +
+        '<button class="addbtn" data-add="grenades" type="button">+ Гранаты</button>' +
+        '<button class="addbtn" data-add="board" type="button">+ Схема</button>' +
+        '<button class="addbtn" data-add="image" type="button">+ Изображение</button>' +
+        '<button class="addbtn" data-add="video" type="button">+ Видео</button>' +
+        '<button class="addbtn" data-add="note" type="button">+ Заметка</button></div>';
     }
-    return { minX: drawing.x, maxX: drawing.x, minY: drawing.y, maxY: drawing.y };
+    html += "</div>";
+    view.innerHTML = html;
+
+    $("[data-fav]", view).onclick = () => { DB.toggleFav("tactic", t.id, t.name); render(); };
+    const tm = $("[data-tmenu]", view);
+    if (tm) tm.onclick = (e) => { e.stopPropagation(); tacticMenu(tm, t); };
+    const ed = $("[data-editdesc]", view);
+    if (ed) ed.onclick = () => sheetEditDesc(t);
+    $$("[data-add]", view).forEach((b) => { b.onclick = () => addBlock(t, b.dataset.add); });
+    $$("[data-bmenu]", view).forEach((b) => {
+      b.onclick = (e) => { e.stopPropagation(); blockMenu(b, t, b.dataset.bmenu); };
+    });
+    $$("[data-bedit]", view).forEach((b) => {
+      b.onclick = () => openBlockEditor(t, blockById(t, b.dataset.bedit));
+    });
+    $$("[data-full]", view).forEach((b) => {
+      b.onclick = () => openViewer(b.dataset.full, b.dataset.cap || "");
+    });
+    if (isCap()) wireBlockDnD(view, t);
+    wireBoards(view, t);
   }
 
-  function shiftDrawing(drawing, dx, dy) {
-    if (drawing.type === "arrow" || drawing.type === "line") {
-      drawing.x1 = round1(drawing.x1 + dx); drawing.y1 = round1(drawing.y1 + dy);
-      drawing.x2 = round1(drawing.x2 + dx); drawing.y2 = round1(drawing.y2 + dy);
-    } else if (drawing.type === "pen") {
-      drawing.points = drawing.points.map((point) => [round1(point[0] + dx), round1(point[1] + dy)]);
+  function blockById(t, bid) {
+    return (t.blocks || []).find((b) => b.id === bid) || null;
+  }
+  function tacticMenu(anchor, t) {
+    openMenu(anchor, [
+      { label: "Изменить название / сторону", onClick: () => sheetEditTactic(t) },
+      { label: "Изменить описание", onClick: () => sheetEditDesc(t) },
+      { label: "Дублировать", onClick: () => duplicateTactic(t.id) },
+      { label: "Сохранить как шаблон", onClick: () => sheetSaveTemplate(t) },
+      { sep: true },
+      { label: "Удалить", danger: true, onClick: () => confirmDlg('Удалить тактику «' + t.name + "»?", async () => {
+        const ok = await commit('удалил тактику «' + t.name + "»", null, () => DB.del("tactics", t.id));
+        if (ok !== null) go(t.map_id ? "#/map/" + t.map_id : "#/tactics");
+      }) },
+    ]);
+  }
+  function sheetEditDesc(t) {
+    openSheet("Описание тактики",
+      '<label class="field"><span>Замысел, тайминги, условия</span><textarea id="dDesc" style="min-height:140px">' + esc(t.description || "") + "</textarea></label>",
+      '<button class="btn ghost" data-x type="button">Отмена</button><button class="btn" data-ok type="button">Сохранить</button>');
+    $("[data-x]").onclick = closeSheet;
+    $("[data-ok]").onclick = async () => {
+      const ok = await commit('изменил описание «' + t.name + "»", { kind: "tactic", id: t.id },
+        () => DB.save("tactics", { id: t.id, description: $("#dDesc").value.trim() }));
+      if (ok !== null) closeSheet();
+    };
+  }
+
+  /* ---------- blocks render ---------- */
+  function blockHTML(t, b) {
+    const title = b.title || BLOCK_NAMES[b.type] || "Блок";
+    let inner = "";
+    if (b.type === "roster") inner = rosterHTML(b);
+    else if (b.type === "tasks") inner = tasksHTML(b);
+    else if (b.type === "grenades") inner = nadesHTML(b);
+    else if (b.type === "board") inner = boardHTML(t, b);
+    else if (b.type === "image") inner = imagesHTML(b);
+    else if (b.type === "video") inner = videosHTML(b);
+    else if (b.type === "note") inner = notesHTML(b);
+    else inner = '<div class="empty">Неизвестный блок.</div>';
+    return '<div class="block' + (b.hidden ? " hiddenblock" : "") + '" data-block="' + b.id + '">' +
+      '<div class="block-head">' + (isCap() ? '<span class="grip" data-grip title="Тяните, чтобы переместить">⠿</span>' : "") +
+      "<h3>" + esc(title) + (b.hidden ? " · скрыт" : "") + "</h3>" +
+      (isCap() ? '<button class="menubtn" data-bmenu="' + b.id + '" type="button">⋮</button>' : "") + "</div>" +
+      '<div class="block-body">' + inner + "</div></div>";
+  }
+  function playerChip(pid) {
+    const p = playerById(pid);
+    if (!p) return '<span class="muted">—</span>';
+    return '<span class="who" style="color:' + esc(p.color || "#e8a72f") + '">' + esc(p.name) + "</span>";
+  }
+  function rosterHTML(b) {
+    if (!(b.items || []).length) return '<div class="empty">Состав не задан.</div>';
+    return (b.items || []).map((it) =>
+      '<div class="task">' + playerChip(it.playerId) + (it.note ? ' <span class="note">— ' + esc(it.note) + "</span>" : "") + "</div>"
+    ).join("");
+  }
+  function tasksHTML(b) {
+    if (!(b.items || []).length) return '<div class="empty">Задач нет.</div>';
+    return (b.items || []).map((it) =>
+      '<div class="task">' + playerChip(it.playerId) +
+      (it.role ? ' <span class="role">' + esc(it.role) + "</span>" : "") +
+      (it.task ? "<div>" + esc(it.task) + "</div>" : "") +
+      (it.note ? '<div class="note">' + esc(it.note) + "</div>" : "") + "</div>"
+    ).join("");
+  }
+  function nadesHTML(b) {
+    if (!(b.items || []).length) return '<div class="empty">Гранаты не добавлены.</div>';
+    return (b.items || []).map((it) =>
+      '<div class="nade"><div>' + (NADE_ICON[it.kind] || "•") + " <b>" + esc(it.name || nadeName(it.kind)) + "</b> " +
+      '<span class="meta">' + esc(nadeName(it.kind)) + (it.by ? " · " + esc((playerById(it.by) || {}).name || "") : "") +
+      (it.from || it.to ? " · " + esc([it.from, it.to].filter(Boolean).join(" → ")) : "") + "</span></div>" +
+      ((it.steps || []).length ? '<ol class="steps">' + it.steps.map((s) => "<li>" + esc(s) + "</li>").join("") + "</ol>" : "") +
+      (it.note ? '<div class="note">' + esc(it.note) + "</div>" : "") + "</div>"
+    ).join("");
+  }
+  function imagesHTML(b) {
+    if (!(b.items || []).length) return '<div class="empty">Изображений нет.</div>';
+    return '<div class="thumbs">' + (b.items || []).map((it) =>
+      '<button class="thumb" data-full="' + esc(it.url) + '" data-cap="' + esc(it.caption || "") + '" type="button"><img src="' + esc(it.url) + '" alt="" loading="lazy">' +
+      (it.caption ? "<span>" + esc(it.caption) + "</span>" : "") + "</button>"
+    ).join("") + "</div>";
+  }
+  function videosHTML(b) {
+    if (!(b.items || []).length) return '<div class="empty">Видео нет.</div>';
+    return (b.items || []).map((it) =>
+      '<div class="task">🎥 <a href="' + esc(it.url) + '" target="_blank" rel="noopener">' + esc(it.caption || it.url) + "</a></div>"
+    ).join("");
+  }
+  function notesHTML(b) {
+    if (!(b.items || []).length) return '<div class="empty">Заметок нет.</div>';
+    return (b.items || []).map((it) =>
+      '<div class="note-text">' + (it.title ? "<h4>" + esc(it.title) + "</h4>" : "") + esc(it.text || "") + "</div>"
+    ).join("");
+  }
+
+  /* ---------- block CRUD ---------- */
+  function saveBlocks(t, blocks, activityText) {
+    return commit(activityText, { kind: "tactic", id: t.id }, () => DB.save("tactics", { id: t.id, blocks }));
+  }
+  function addBlock(t, type) {
+    const base = { id: uid("b"), type, title: BLOCK_NAMES[type] || "Блок", hidden: false };
+    if (type === "board") { base.markers = []; base.drawings = []; base.markerStyle = "number"; }
+    else base.items = [];
+    openBlockEditor(t, base, true);
+  }
+  function blockMenu(anchor, t, bid) {
+    const b = blockById(t, bid);
+    if (!b) return;
+    openMenu(anchor, [
+      { label: "Изменить", onClick: () => openBlockEditor(t, b, false) },
+      { label: "Выше", onClick: () => moveBlock(t, bid, -1) },
+      { label: "Ниже", onClick: () => moveBlock(t, bid, 1) },
+      { label: "Дублировать", onClick: () => dupBlock(t, bid) },
+      { label: b.hidden ? "Показать" : "Скрыть", onClick: () => toggleBlock(t, bid) },
+      { sep: true },
+      { label: "Удалить блок", danger: true, onClick: () => confirmDlg('Удалить блок «' + (b.title || BLOCK_NAMES[b.type]) + "»?", () => {
+        const blocks = (t.blocks || []).filter((x) => x.id !== bid);
+        saveBlocks(t, blocks, 'удалил блок в «' + t.name + "»");
+      }) },
+    ]);
+  }
+  async function moveBlock(t, bid, dir) {
+    const blocks = (t.blocks || []).slice();
+    const i = blocks.findIndex((x) => x.id === bid);
+    const j = i + dir;
+    if (i < 0 || j < 0 || j >= blocks.length) return;
+    const tmp = blocks[i]; blocks[i] = blocks[j]; blocks[j] = tmp;
+    await saveBlocks(t, blocks, null);
+  }
+  async function dupBlock(t, bid) {
+    const blocks = clone(t.blocks || []);
+    const i = blocks.findIndex((x) => x.id === bid);
+    if (i < 0) return;
+    const copy = clone(blocks[i]);
+    copy.id = uid("b");
+    (copy.items || []).forEach((it) => { it.id = uid("i"); });
+    (copy.markers || []).forEach((mk) => { mk.id = uid("m"); });
+    (copy.drawings || []).forEach((d) => { d.id = uid("d"); });
+    blocks.splice(i + 1, 0, copy);
+    await saveBlocks(t, blocks, 'дублировал блок в «' + t.name + "»");
+  }
+  async function toggleBlock(t, bid) {
+    const blocks = clone(t.blocks || []);
+    const b = blocks.find((x) => x.id === bid);
+    if (!b) return;
+    b.hidden = !b.hidden;
+    await saveBlocks(t, blocks, null);
+  }
+
+  function wireBlockDnD(view, t) {
+    const blocks = $$("[data-block]", view);
+    let dragId = null;
+    blocks.forEach((el) => {
+      el.draggable = false;
+      const grip = $("[data-grip]", el);
+      if (!grip) return;
+      grip.addEventListener("mousedown", () => { el.draggable = true; });
+      grip.addEventListener("mouseup", () => { el.draggable = false; });
+      el.addEventListener("dragstart", (e) => {
+        dragId = el.dataset.block;
+        e.dataTransfer.effectAllowed = "move";
+        try { e.dataTransfer.setData("text/plain", dragId); } catch (err) {}
+        el.classList.add("dragging");
+      });
+      el.addEventListener("dragend", () => {
+        dragId = null;
+        el.classList.remove("dragging");
+        blocks.forEach((x) => x.classList.remove("dragover"));
+      });
+      el.addEventListener("dragover", (e) => { e.preventDefault(); el.classList.add("dragover"); });
+      el.addEventListener("dragleave", () => el.classList.remove("dragover"));
+      el.addEventListener("drop", async (e) => {
+        e.preventDefault();
+        const targetId = el.dataset.block;
+        if (!dragId || dragId === targetId) return;
+        const order = (t.blocks || []).map((b) => b.id).filter((id) => id !== dragId);
+        order.splice(order.indexOf(targetId), 0, dragId);
+        const map = {};
+        (t.blocks || []).forEach((b) => { map[b.id] = b; });
+        await saveBlocks(t, order.map((id) => map[id]).filter(Boolean), null);
+      });
+    });
+  }
+
+  /* ---------- block editors ---------- */
+  function playerOptions(selected) {
+    return '<option value="">—</option>' + DB.cache.players.map((p) =>
+      '<option value="' + p.id + '"' + (selected === p.id ? " selected" : "") + ">" + esc(p.name) + "</option>").join("");
+  }
+  function fld(label, inner) {
+    return '<label class="field"><span>' + esc(label) + "</span>" + inner + "</label>";
+  }
+  function itemEditorHTML(b, it) {
+    const d = 'data-i="' + it.id + '"';
+    let h = '<div class="sec" style="margin:8px 0" data-item="' + it.id + '"><div class="sec-pad">';
+    if (b.type === "roster") {
+      h += fld("Игрок", '<select ' + d + ' data-k="playerId">' + playerOptions(it.playerId) + "</select>");
+      h += fld("Пометка", '<input ' + d + ' data-k="note" maxlength="80" value="' + esc(it.note || "") + '" placeholder="Точка / роль">');
+    } else if (b.type === "tasks") {
+      h += fld("Игрок", '<select ' + d + ' data-k="playerId">' + playerOptions(it.playerId) + "</select>");
+      h += '<div class="field-row">' + fld("Роль", '<input ' + d + ' data-k="role" maxlength="24" value="' + esc(it.role || "") + '" placeholder="Smoke">') +
+        fld("Задача", '<input ' + d + ' data-k="task" maxlength="120" value="' + esc(it.task || "") + '" placeholder="Smoke CT">') + "</div>";
+      h += fld("Примечание", '<input ' + d + ' data-k="note" maxlength="140" value="' + esc(it.note || "") + '">');
+    } else if (b.type === "grenades") {
+      h += '<div class="field-row">' +
+        fld("Тип", '<select ' + d + ' data-k="kind">' + ["smoke", "molly", "flash"].map((k) => '<option value="' + k + '"' + (it.kind === k ? " selected" : "") + ">" + nadeName(k) + "</option>").join("") + "</select>") +
+        fld("Название", '<input ' + d + ' data-k="name" maxlength="60" value="' + esc(it.name || "") + '" placeholder="Smoke CT">') + "</div>";
+      h += fld("Кидает", '<select ' + d + ' data-k="by">' + playerOptions(it.by) + "</select>");
+      h += '<div class="field-row">' + fld("Откуда", '<input ' + d + ' data-k="from" maxlength="40" value="' + esc(it.from || "") + '">') +
+        fld("Куда", '<input ' + d + ' data-k="to" maxlength="40" value="' + esc(it.to || "") + '">') + "</div>";
+      h += fld("Шаги (каждый с новой строки)", '<textarea ' + d + ' data-k="steps" style="min-height:64px">' + esc((it.steps || []).join("\n")) + "</textarea>");
+      h += fld("Заметка", '<input ' + d + ' data-k="note" maxlength="140" value="' + esc(it.note || "") + '">');
+    } else if (b.type === "image") {
+      h += fld("Ссылка", '<input ' + d + ' data-k="url" maxlength="500" value="' + esc(it.url || "") + '" placeholder="https://…">');
+      h += fld("Подпись", '<input ' + d + ' data-k="caption" maxlength="80" value="' + esc(it.caption || "") + '">');
+      h += '<div class="btnrow"><button class="btn ghost tiny" data-upload="' + it.id + '" type="button">Загрузить файл</button><input type="file" data-file="' + it.id + '" accept="image/*" hidden></div>';
+    } else if (b.type === "video") {
+      h += fld("Ссылка на видео", '<input ' + d + ' data-k="url" maxlength="500" value="' + esc(it.url || "") + '" placeholder="https://…">');
+      h += fld("Подпись", '<input ' + d + ' data-k="caption" maxlength="80" value="' + esc(it.caption || "") + '">');
+    } else if (b.type === "note") {
+      h += fld("Заголовок", '<input ' + d + ' data-k="title" maxlength="80" value="' + esc(it.title || "") + '">');
+      h += fld("Текст", '<textarea ' + d + ' data-k="text">' + esc(it.text || "") + "</textarea>");
+    }
+    h += '<div class="btnrow"><button class="btn danger tiny" data-delitem="' + it.id + '" type="button">Убрать пункт</button></div>';
+    return h + "</div></div>";
+  }
+  function blankItem(type) {
+    if (type === "roster") return { id: uid("i"), playerId: "", note: "" };
+    if (type === "tasks") return { id: uid("i"), playerId: "", role: "", task: "", note: "" };
+    if (type === "grenades") return { id: uid("i"), kind: "smoke", name: "", by: "", from: "", to: "", steps: [], note: "" };
+    if (type === "image") return { id: uid("i"), url: "", caption: "" };
+    if (type === "video") return { id: uid("i"), url: "", caption: "" };
+    if (type === "note") return { id: uid("i"), title: "", text: "" };
+    return { id: uid("i") };
+  }
+
+  function openBlockEditor(t, b, isNew) {
+    if (b.type === "board") { sheetBoardEdit(t, b, isNew); return; }
+    let items = clone(b.items || []);
+    if (isNew && !items.length) items = [blankItem(b.type)];
+    const paint = () => {
+      openSheet((isNew ? "Новый блок · " : "") + (BLOCK_NAMES[b.type] || "Блок"),
+        fld("Заголовок блока", '<input id="beTitle" maxlength="60" value="' + esc(b.title || BLOCK_NAMES[b.type] || "") + '">') +
+        '<div id="beItems">' + items.map((it) => itemEditorHTML(b, it)).join("") + "</div>" +
+        '<div class="btnrow"><button class="btn ghost tiny" id="beAdd" type="button">+ Добавить пункт</button></div>',
+        '<button class="btn ghost" data-x type="button">Отмена</button><button class="btn" data-ok type="button">Сохранить</button>');
+      $("[data-x]").onclick = closeSheet;
+      $("#beAdd").onclick = () => { collectItems(); items.push(blankItem(b.type)); paint(); };
+      $$("[data-delitem]").forEach((btn) => {
+        btn.onclick = () => { collectItems(); items = items.filter((x) => x.id !== btn.dataset.delitem); paint(); };
+      });
+      $$("[data-upload]").forEach((btn) => {
+        btn.onclick = () => { const f = document.querySelector('[data-file="' + btn.dataset.upload + '"]'); if (f) f.click(); };
+      });
+      $$("[data-file]").forEach((inp) => {
+        inp.onchange = async () => {
+          const file = inp.files && inp.files[0];
+          if (!file) return;
+          saveState("saving");
+          try {
+            const up = await DB.adapter.uploadImage(DB.team.id, file);
+            const target = document.querySelector('[data-i="' + inp.dataset.file + '"][data-k="url"]');
+            if (target) target.value = up.url;
+            saveState("saved");
+            toast("Файл загружен", "ok");
+          } catch (e) { saveState(""); toast((e && e.message) || "Не загрузилось", "warn"); }
+        };
+      });
+      $("[data-ok]").onclick = async () => {
+        collectItems();
+        const nb = clone(b);
+        nb.title = $("#beTitle").value.trim() || nb.title;
+        nb.items = items.filter((it) => !isBlankItem(b.type, it));
+        const blocks = clone(t.blocks || []);
+        const i = blocks.findIndex((x) => x.id === nb.id);
+        if (i >= 0) blocks[i] = nb; else blocks.push(nb);
+        const ok = await saveBlocks(t, blocks, (isNew ? "добавил блок в «" : "изменил блок в «") + t.name + "»");
+        if (ok !== null) closeSheet();
+      };
+    };
+    const collectItems = () => {
+      items.forEach((it) => {
+        $$('[data-i="' + it.id + '"]').forEach((inp) => {
+          const k = inp.dataset.k;
+          if (!k || inp.type === "file") return;
+          it[k] = k === "steps" ? inp.value.split("\n").map((s) => s.trim()).filter(Boolean) : inp.value;
+        });
+      });
+    };
+    paint();
+  }
+  function isBlankItem(type, it) {
+    if (type === "roster") return !it.playerId && !it.note;
+    if (type === "tasks") return !it.playerId && !it.task && !it.role;
+    if (type === "grenades") return !it.name && !(it.steps || []).length;
+    if (type === "image" || type === "video") return !it.url;
+    if (type === "note") return !it.title && !it.text;
+    return false;
+  }
+
+  /* ---------- board block (схема) ---------- */
+  const BOARD_COLORS = ["#e8a72f", "#ef5d5d", "#5da9ff", "#48cf8b", "#b984ff", "#f2f4f7"];
+  const safeColor = (c) => (/^#[0-9a-f]{6}$/i.test(String(c || "")) ? c : BOARD_COLORS[0]);
+
+  function boardBg(t, b) {
+    if (b.bg) return b.bg;
+    const m = mapById(t.map_id);
+    return m ? m.image : "";
+  }
+  function boardHTML(t, b) {
+    const bg = boardBg(t, b);
+    let h = '<div class="boardwrap" data-board="' + b.id + '"><div class="map-canvas">';
+    if (bg) h += '<img class="map-photo" src="' + esc(bg) + '" alt="" draggable="false">';
+    else h += '<div class="empty">Нет фона карты.</div>';
+    h += boardSVG(b, isCap()) + "</div>";
+    if (isCap()) {
+      h += '<div class="boardbar">' + boardToolsHTML(b) + "</div>";
     } else {
-      drawing.x = round1(drawing.x + dx); drawing.y = round1(drawing.y + dy);
+      h += '<div class="boardbar"><button class="toolbtn" data-bzoom type="button">⤢ Развернуть</button></div>';
     }
+    return h + "</div>";
   }
-
-  function addWindowDrag(move, up) {
-    window.addEventListener("pointermove", move, { passive: false });
-    window.addEventListener("pointerup", up, { once: true });
-    window.addEventListener("pointercancel", up, { once: true });
+  function boardToolsHTML(b) {
+    const tools = [["select", "Выбор"], ["arrow", "→"], ["line", "—"], ["pen", "✎"], ["number", "①"], ["text", "T"]];
+    let h = tools.map((x) => '<button class="toolbtn' + (S.boardTool === x[0] ? " on" : "") + '" data-tool="' + x[0] + '" type="button">' + x[1] + "</button>").join("");
+    h += BOARD_COLORS.map((c) => '<button class="swatch' + (S.boardColor === c ? " on" : "") + '" data-color="' + c + '" style="--sw:' + c + '" type="button"></button>').join("");
+    h += '<button class="toolbtn" data-addmarker type="button">+ Маркер</button>';
+    h += '<button class="toolbtn" data-mstyle type="button">' + (b.markerStyle === "nick" ? "Ники" : "Номера") + "</button>";
+    h += '<button class="toolbtn" data-bundo type="button">↩</button>';
+    h += '<button class="toolbtn" data-bdel type="button">🗑</button>';
+    h += '<button class="toolbtn" data-bzoom type="button">⤢</button>';
+    return h;
   }
-
-  function removeWindowDrag(move, up) {
-    window.removeEventListener("pointermove", move);
-    window.removeEventListener("pointerup", up);
-    window.removeEventListener("pointercancel", up);
-  }
-
-  function svgPoint(svg, event) {
-    const rect = svg.getBoundingClientRect();
-    return {
-      x: clamp(((event.clientX - rect.left) / rect.width) * 100, 0, 100),
-      y: clamp(((event.clientY - rect.top) / rect.height) * 100, 0, 100),
-    };
-  }
-
-  function round1(value) {
-    return Math.round(value * 10) / 10;
-  }
-
-  /* ================= таймер бомбы в шапке ================= */
-  // Кнопка «Бомба 40» сразу запускает отсчёт. Рядом: время, Стоп/Продолжить, Скрыть.
-  function bombTick() {
-    if (bomb.state !== "run") return;
-    bomb.left = Math.max(0, (bomb.endAt - Date.now()) / 1000);
-    if (bomb.left <= 0) {
-      bomb.left = 0;
-      bomb.state = "done";
-      clearInterval(bombInt);
-      bombInt = null;
-      buzzEnd();
-    } else if (bomb.left <= 5.05 && !bomb.warned) {
-      bomb.warned = true;
-    }
-    if (bomb.state === "run" && bomb.left <= 5.05 && bomb.left > 0) {
-      const whole = Math.ceil(bomb.left);
-      if (whole !== bomb.lastWhole) { bomb.lastWhole = whole; buzzShort(); }
-    }
-    paintBomb();
-  }
-
-  function startBomb() {
-    clearInterval(bombInt);
-    bomb = { state: "run", left: BOMB_SECONDS, endAt: Date.now() + BOMB_SECONDS * 1000, lastWhole: BOMB_SECONDS + 1 };
-    bombInt = setInterval(bombTick, 120);
-    paintBomb();
-  }
-
-  function toggleBomb() {
-    if (bomb.state === "run") {
-      bomb.state = "pause";
-      bomb.left = Math.max(0, (bomb.endAt - Date.now()) / 1000);
-      clearInterval(bombInt);
-      bombInt = null;
-    } else if (bomb.state === "pause") {
-      bomb.state = "run";
-      bomb.endAt = Date.now() + bomb.left * 1000;
-      bombInt = setInterval(bombTick, 120);
-    } else {
-      startBomb();
-      return;
-    }
-    paintBomb();
-  }
-
-  function stopBomb(silent) {
-    clearInterval(bombInt);
-    bombInt = null;
-    bomb = { state: "idle", left: BOMB_SECONDS, endAt: 0 };
-    if (!silent) paintBomb();
-    else { $("#bombBar").hidden = true; paintBombButton(); }
-  }
-
-  function formatBomb(seconds) {
-    const total = Math.max(0, seconds);
-    const whole = Math.ceil(total - 1e-4);
-    return "00:" + String(whole).padStart(2, "0");
-  }
-
-  function paintBombButton() {
-    const button = $("#bombBtn");
-    if (!button) return;
-    if (bomb.state === "run") {
-      button.classList.add("running");
-      button.textContent = "\u25CF " + formatBomb(bomb.left);
-    } else if (bomb.state === "pause") {
-      button.classList.remove("running");
-      button.textContent = "\u275A\u275A " + formatBomb(bomb.left);
-    } else if (bomb.state === "done") {
-      button.classList.remove("running");
-      button.textContent = "Бомба 40";
-    } else {
-      button.classList.remove("running");
-      button.textContent = "Бомба 40";
-    }
-  }
-
-  function paintBomb() {
-    const bar = $("#bombBar");
-    const time = $("#bombTime");
-    const toggle = $("#bombToggle");
-    if (!bar || !time || !toggle) return;
-    paintBombButton();
-    if (bomb.state === "idle") {
-      bar.hidden = true;
-    } else {
-      bar.hidden = bomb.hidden === true;
-      if (bomb.state === "done") {
-        time.textContent = "ВЗРЫВ";
-        time.classList.remove("low");
-        time.classList.add("done");
-        toggle.textContent = "Заново";
+  function boardSVG(b, editable) {
+    const sel = S.boardSel;
+    let defs = "", body = "";
+    (b.drawings || []).forEach((d, i) => {
+      if (d.type !== "arrow") return;
+      defs += '<marker id="ba-' + b.id + "-" + i + '" viewBox="0 0 10 10" refX="8.2" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="' + safeColor(d.color) + '"/></marker>';
+    });
+    body += '<rect class="map-hit-area" width="100" height="100" fill="transparent"/>';
+    (b.drawings || []).forEach((d, i) => {
+      const c = safeColor(d.color);
+      const selected = sel && sel.id === d.id ? " selected" : "";
+      if (d.type === "arrow" || d.type === "line") {
+        const mk = d.type === "arrow" ? ' marker-end="url(#ba-' + b.id + "-" + i + ')"' : "";
+        const co = ' x1="' + d.x1 + '" y1="' + d.y1 + '" x2="' + d.x2 + '" y2="' + d.y2 + '"';
+        body += '<g class="draw-item' + selected + '" data-draw="' + d.id + '"><line class="move-line hit"' + co + '/><line class="move-line visible" stroke="' + c + '"' + co + mk + '/><line class="selection-ring"' + co + "/></g>";
+      } else if (d.type === "pen") {
+        const pts = (d.points || []).map((p) => p[0] + "," + p[1]).join(" ");
+        body += '<g class="draw-item' + selected + '" data-draw="' + d.id + '"><polyline class="move-line hit" points="' + pts + '"/><polyline class="move-line visible" stroke="' + c + '" points="' + pts + '"/><polyline class="selection-ring" points="' + pts + '"/></g>';
+      } else if (d.type === "number") {
+        body += '<g class="draw-item draw-marker' + selected + '" data-draw="' + d.id + '" transform="translate(' + d.x + "," + d.y + ')"><circle class="tactic-number-bg" r="3.25" stroke="' + c + '"/><circle class="selection-ring" r="4.2"/><text class="tactic-number-text" y=".15" fill="' + c + '">' + esc(String(d.text || "1").slice(0, 3)) + "</text></g>";
       } else {
-        time.textContent = formatBomb(bomb.left);
-        time.classList.toggle("low", bomb.left <= 10);
-        time.classList.remove("done");
-        toggle.textContent = bomb.state === "run" ? "Стоп" : "Продолжить";
+        const label = String(d.text || "?").slice(0, 24);
+        const w = Math.min(48, Math.max(12, label.length * 1.9 + 5));
+        body += '<g class="draw-item draw-marker' + selected + '" data-draw="' + d.id + '" transform="translate(' + d.x + "," + d.y + ')"><rect class="tactic-label-bg" x="' + (-w / 2) + '" y="-2.65" width="' + w + '" height="5.3" rx="1" stroke="' + c + '"/><rect class="selection-ring" x="' + (-w / 2 - 1) + '" y="-3.65" width="' + (w + 2) + '" height="7.3" rx="1"/><text class="tactic-label" y=".1" fill="' + c + '">' + esc(label) + "</text></g>";
       }
-    }
-    syncStickyTop();
+    });
+    (b.markers || []).forEach((mk) => {
+      body += markerSVG(b, mk, sel && sel.id === mk.id);
+    });
+    return '<svg class="tactical-map' + (editable ? " editing" : "") + '" viewBox="0 0 100 100" data-svg="' + b.id + '"><defs>' + defs + "</defs>" + body + "</svg>";
   }
-
-  function beep(frequency, duration) {
-    try {
-      const AudioContext = window.AudioContext || window.webkitAudioContext;
-      const context = beep.context || (beep.context = new AudioContext());
-      if (context.state === "suspended") context.resume();
-      const oscillator = context.createOscillator();
-      const gain = context.createGain();
-      oscillator.frequency.value = frequency;
-      oscillator.connect(gain);
-      gain.connect(context.destination);
-      gain.gain.setValueAtTime(0.12, context.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.001, context.currentTime + duration);
-      oscillator.start();
-      oscillator.stop(context.currentTime + duration);
-    } catch (error) {}
-  }
-
-  function buzzShort() {
-    beep(980, 0.1);
-    if (navigator.vibrate) navigator.vibrate(55);
-  }
-
-  function buzzEnd() {
-    beep(720, 0.45);
-    if (navigator.vibrate) navigator.vibrate([250, 150, 350]);
-  }
-
-  /* ================= капитан: PIN, настройки, обмен ================= */
-  function randomSalt() {
-    try {
-      const bytes = new Uint8Array(16);
-      crypto.getRandomValues(bytes);
-      return Array.from(bytes).map((byte) => byte.toString(16).padStart(2, "0")).join("");
-    } catch (error) {
-      return Math.random().toString(36).slice(2) + Date.now().toString(36);
-    }
-  }
-
-  async function passwordHash(password, salt) {
-    const value = salt + "::" + password;
-    if (window.crypto && crypto.subtle && window.TextEncoder) {
-      const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
-      return Array.from(new Uint8Array(digest)).map((byte) => byte.toString(16).padStart(2, "0")).join("");
-    }
-    let hash = 2166136261;
-    for (let index = 0; index < value.length; index++) {
-      hash ^= value.charCodeAt(index);
-      hash = Math.imul(hash, 16777619);
-    }
-    return "fallback-" + (hash >>> 0).toString(16);
-  }
-
-  function openCaptainGate() {
-    const team = activeTeam();
-    if (!team) return;
-    if (captainRemembered(team)) {
-      setEdit(true);
-      toast("Режим капитана открыт");
-      return;
-    }
-    closeModal();
-    const html = '<div class="modal" id="modal"><div class="modal-in narrow"><p class="modal-kicker">Только для капитана</p><h3>PIN капитана</h3><p class="muted">После верного PIN это устройство запомнится на 30 дней, и правки будут открываться сразу.</p><form id="pinForm"><label class="field"><span>PIN</span><input id="pinInput" type="password" inputmode="numeric" autocomplete="current-password" minlength="4" required></label><div class="form-error" id="pinError"></div><div class="row"><button class="btn" type="submit">Открыть правки</button><button class="btn ghost" id="mClose" type="button">Отмена</button></div></form></div></div>';
-    document.body.insertAdjacentHTML("beforeend", html);
-    $("#mClose").onclick = closeModal;
-    $("#modal").onclick = (event) => { if (event.target.id === "modal") closeModal(); };
-    $("#pinInput").focus();
-    $("#pinForm").onsubmit = async (event) => {
-      event.preventDefault();
-      const pin = $("#pinInput").value;
-      const hash = await passwordHash(pin, team.pin.salt);
-      if (hash !== team.pin.hash) {
-        $("#pinError").textContent = "Неверный PIN.";
-        $("#pinInput").select();
-        return;
+  function markerSVG(b, mk, selected) {
+    const sel = selected ? " selected" : "";
+    if (mk.kind === "player") {
+      const p = playerById(mk.playerId);
+      const color = safeColor((p && p.color) || mk.color);
+      const idx = p ? DB.cache.players.indexOf(p) + 1 : "?";
+      let inner = "";
+      if ((b.markerStyle || "number") === "nick" && p) {
+        const nick = String(p.name).slice(0, 14);
+        const w = Math.min(34, Math.max(12, nick.length * 1.75 + 5));
+        inner = '<rect class="player-tag" x="' + (-w / 2) + '" y="-2.7" width="' + w + '" height="5.4" rx="1" stroke="' + color + '"/><text class="player-nick" y=".1" fill="' + color + '">' + esc(nick) + "</text>";
+      } else {
+        inner = '<circle r="3.25" stroke="' + color + '"/><text class="player-num" y=".1" fill="' + color + '">' + idx + "</text>";
       }
-      team.captainUntil = Date.now() + CAPTAIN_REMEMBER_MS;
-      save();
-      closeModal();
-      setEdit(true);
-      toast("Устройство капитана запомнено на 30 дней");
-    };
+      return '<g class="pmk draw-item' + sel + '" data-marker="' + mk.id + '" transform="translate(' + mk.x + "," + mk.y + ')">' + inner + '<circle class="selection-ring" r="4.4"/></g>';
+    }
+    if (mk.kind === "smoke" || mk.kind === "molly" || mk.kind === "flash") {
+      const c = mk.kind === "smoke" ? "#9aa4b0" : mk.kind === "molly" ? "#ef5d5d" : "#e8c56a";
+      const icon = NADE_ICON[mk.kind] || "?";
+      return '<g class="draw-item draw-marker' + sel + '" data-marker="' + mk.id + '" transform="translate(' + mk.x + "," + mk.y + ')"><circle class="tactic-number-bg" r="3.1" stroke="' + c + '"/><circle class="selection-ring" r="4.1"/><text class="tactic-number-text" y=".15" fill="' + c + '" style="font-size:3.4px">' + icon + "</text></g>";
+    }
+    const label = String(mk.label || "?").slice(0, 18);
+    const w = Math.min(40, Math.max(10, label.length * 1.8 + 5));
+    const c = safeColor(mk.color);
+    return '<g class="draw-item draw-marker' + sel + '" data-marker="' + mk.id + '" transform="translate(' + mk.x + "," + mk.y + ')"><rect class="tactic-label-bg" x="' + (-w / 2) + '" y="-2.5" width="' + w + '" height="5" rx="1" stroke="' + c + '"/><rect class="selection-ring" x="' + (-w / 2 - 1) + '" y="-3.5" width="' + (w + 2) + '" height="7" rx="1"/><text class="tactic-label" y=".1" fill="' + c + '">' + esc(label) + "</text></g>";
   }
 
-  function setEdit(on) {
-    editMode = Boolean(on);
-    ui.selected = null;
-    ui.drawTool = "select";
-    document.body.classList.toggle("editing", editMode);
-    paintChrome();
+  function wireBoards(view, t) {
+    $$("[data-board]", view).forEach((wrap) => {
+      const b = blockById(t, wrap.dataset.board);
+      if (!b) return;
+      $$("[data-bzoom]", wrap).forEach((x) => { x.onclick = () => wrap.classList.toggle("big"); });
+      if (!isCap()) return;
+      $$("[data-tool]", wrap).forEach((btn) => {
+        btn.onclick = () => { S.boardTool = btn.dataset.tool; S.boardSel = null; S.boardPending = null; render(); };
+      });
+      $$("[data-color]", wrap).forEach((btn) => {
+        btn.onclick = () => {
+          S.boardColor = btn.dataset.color;
+          recolorSelection(t, b);
+        };
+      });
+      $("[data-addmarker]", wrap).onclick = () => sheetAddMarker(t, b);
+      $("[data-mstyle]", wrap).onclick = async () => {
+        b.markerStyle = (b.markerStyle || "number") === "nick" ? "number" : "nick";
+        await silentBoardSave(t, b);
+      };
+      $("[data-bundo]", wrap).onclick = () => boardUndo(t, b);
+      $("[data-bdel]", wrap).onclick = () => boardDeleteSel(t, b);
+      const svg = $("[data-svg]", wrap);
+      if (svg) bindBoardSVG(svg, t, b);
+    });
+  }
+
+  async function silentBoardSave(t, b) {
+    saveState("saving");
+    try {
+      const blocks = clone(t.blocks || []);
+      const i = blocks.findIndex((x) => x.id === b.id);
+      if (i >= 0) blocks[i] = clone(b);
+      await DB.save("tactics", { id: t.id, blocks });
+      saveState("saved");
+      render();
+    } catch (e) { saveState(""); toast((e && e.message) || "Не сохранилось", "warn"); }
+  }
+  function recolorSelection(t, b) {
+    const sel = S.boardSel;
+    if (!sel) { render(); return; }
+    const d = (b.drawings || []).find((x) => x.id === sel.id);
+    if (d) { d.color = S.boardColor; silentBoardSave(t, b); return; }
+    const mk = (b.markers || []).find((x) => x.id === sel.id);
+    if (mk && mk.kind === "point") { mk.color = S.boardColor; silentBoardSave(t, b); return; }
     render();
   }
+  function boardUndo(t, b) {
+    if ((b.drawings || []).length) { b.drawings.pop(); silentBoardSave(t, b); }
+    else if ((b.markers || []).length) { b.markers.pop(); silentBoardSave(t, b); }
+  }
+  function boardDeleteSel(t, b) {
+    const sel = S.boardSel;
+    if (!sel) { toast("Сначала выберите пометку"); return; }
+    b.drawings = (b.drawings || []).filter((x) => x.id !== sel.id);
+    b.markers = (b.markers || []).filter((x) => x.id !== sel.id);
+    S.boardSel = null;
+    silentBoardSave(t, b);
+  }
 
-  function applyEdit() {
-    $$(".ed").forEach((element) => {
-      element.classList.toggle("editable", editMode);
-      element.contentEditable = editMode ? "true" : "false";
-      if (!editMode || element.dataset.bound) return;
-      element.dataset.bound = "1";
-      element.addEventListener("click", (event) => {
-        if (editMode) event.preventDefault();
-      });
-      element.addEventListener("blur", () => {
-        setPath(element.dataset.path, element.textContent.trim());
-        save();
-      });
-      element.addEventListener("keydown", (event) => {
-        if (event.key === "Enter") {
-          event.preventDefault();
-          element.blur();
+  function sheetAddMarker(t, b) {
+    const usedPlayers = (b.markers || []).filter((m) => m.kind === "player").map((m) => m.playerId);
+    openSheet("Новый маркер",
+      fld("Тип", '<select id="mkKind"><option value="player">Игрок</option><option value="smoke">💨 Смоук</option><option value="molly">🔥 Молотов</option><option value="flash">⚡ Флешка</option><option value="point">Точка с подписью</option></select>') +
+      '<div id="mkPlayerWrap">' + fld("Игрок", '<select id="mkPlayer">' + DB.cache.players.filter((p) => usedPlayers.indexOf(p.id) < 0).map((p) => '<option value="' + p.id + '">' + esc(p.name) + "</option>").join("") + "</select>") + "</div>" +
+      '<div id="mkPointWrap" hidden>' + fld("Подпись", '<input id="mkLabel" maxlength="18" placeholder="CT">') + "</div>" +
+      fld("Заметка (необязательно)", '<input id="mkNote" maxlength="120">'),
+      '<button class="btn ghost" data-x type="button">Отмена</button><button class="btn" data-ok type="button">Поставить на схему</button>');
+    $("[data-x]").onclick = closeSheet;
+    $("#mkKind").onchange = (e) => {
+      $("#mkPlayerWrap").hidden = e.target.value !== "player";
+      $("#mkPointWrap").hidden = e.target.value !== "point";
+    };
+    $("[data-ok]").onclick = () => {
+      const kind = $("#mkKind").value;
+      const marker = { id: uid("m"), kind, x: 50, y: 50, note: $("#mkNote").value.trim() };
+      if (kind === "player") {
+        marker.playerId = $("#mkPlayer").value || null;
+        if (!marker.playerId) { toast("Нет свободных игроков", "warn"); return; }
+      }
+      if (kind === "point") {
+        marker.label = $("#mkLabel").value.trim() || "?";
+        marker.color = S.boardColor;
+      }
+      closeSheet();
+      S.boardPending = { blockId: b.id, marker };
+      S.boardTool = "select";
+      toast("Тапните по схеме, куда поставить");
+    };
+  }
+
+  function sheetBoardEdit(t, b, isNew) {
+    openSheet("Схема",
+      fld("Заголовок", '<input id="bdTitle" maxlength="60" value="' + esc(b.title || "Схема") + '">') +
+      fld("Свой фон (ссылка, пусто = радар карты)", '<input id="bdBg" maxlength="500" value="' + esc(b.bg || "") + '" placeholder="https://…">'),
+      '<button class="btn ghost" data-x type="button">Отмена</button>' +
+      (isNew ? "" : '<button class="btn danger" data-clear type="button">Очистить</button>') +
+      '<button class="btn" data-ok type="button">Сохранить</button>');
+    $("[data-x]").onclick = closeSheet;
+    const clr = $("[data-clear]");
+    if (clr) clr.onclick = () => confirmDlg("Очистить схему?", () => {
+      b.markers = []; b.drawings = [];
+      const blocks = clone(t.blocks || []);
+      const i = blocks.findIndex((x) => x.id === b.id);
+      if (i >= 0) { blocks[i] = clone(b); saveBlocks(t, blocks, null).then(() => closeSheet()); }
+    });
+    $("[data-ok]").onclick = async () => {
+      b.title = $("#bdTitle").value.trim() || "Схема";
+      b.bg = $("#bdBg").value.trim();
+      const blocks = clone(t.blocks || []);
+      const i = blocks.findIndex((x) => x.id === b.id);
+      if (i >= 0) blocks[i] = clone(b); else blocks.push(clone(b));
+      const ok = await saveBlocks(t, blocks, (isNew ? "добавил схему в «" : "изменил схему в «") + t.name + "»");
+      if (ok !== null) closeSheet();
+    };
+  }
+
+  /* --- board pointer interactions --- */
+  function svgPoint(svg, e) {
+    const r = svg.getBoundingClientRect();
+    const cx = (e.touches && e.touches[0] ? e.touches[0].clientX : e.clientX);
+    const cy = (e.touches && e.touches[0] ? e.touches[0].clientY : e.clientY);
+    return {
+      x: Math.max(0, Math.min(100, ((cx - r.left) / r.width) * 100)),
+      y: Math.max(0, Math.min(100, ((cy - r.top) / r.height) * 100)),
+    };
+  }
+  const r1 = (v) => Math.round(v * 10) / 10;
+
+  function bindBoardSVG(svg, t, b) {
+    svg.addEventListener("pointerdown", (e) => {
+      if (!isCap() || (e.button != null && e.button > 0)) return;
+      const pt = svgPoint(svg, e);
+      // Постановка отложенного маркера.
+      if (S.boardPending && S.boardPending.blockId === b.id) {
+        e.preventDefault();
+        const mk = S.boardPending.marker;
+        mk.x = r1(pt.x); mk.y = r1(pt.y);
+        S.boardPending = null;
+        b.markers = b.markers || [];
+        b.markers.push(mk);
+        silentBoardSave(t, b);
+        return;
+      }
+      const drawEl = e.target.closest ? e.target.closest("[data-draw]") : null;
+      const markEl = e.target.closest ? e.target.closest("[data-marker]") : null;
+      if (S.boardTool === "select") {
+        e.preventDefault();
+        if (markEl) {
+          S.boardSel = { id: markEl.dataset.marker };
+          startMarkerDrag(e, svg, t, b, markEl);
+        } else if (drawEl) {
+          S.boardSel = { id: drawEl.dataset.draw };
+          startDrawDrag(e, svg, t, b, drawEl);
+        } else {
+          S.boardSel = null;
+          render();
         }
-      });
+        return;
+      }
+      if (S.boardTool === "number" || S.boardTool === "text") {
+        e.preventDefault();
+        askBoardText(S.boardTool, (val) => {
+          b.drawings = b.drawings || [];
+          const d = { id: uid("d"), type: S.boardTool, x: r1(pt.x), y: r1(pt.y), text: val, color: S.boardColor };
+          b.drawings.push(d);
+          S.boardSel = { id: d.id };
+          silentBoardSave(t, b);
+        });
+        return;
+      }
+      if (S.boardTool === "arrow" || S.boardTool === "line" || S.boardTool === "pen") {
+        e.preventDefault();
+        startStroke(e, svg, t, b, pt, S.boardTool);
+      }
+    });
+  }
+  function askBoardText(type, cb) {
+    openSheet(type === "number" ? "Номер" : "Подпись",
+      fld(type === "number" ? "Число 1–99" : "Текст", '<input id="btVal" maxlength="' + (type === "number" ? 2 : 24) + '" ' + (type === "number" ? 'inputmode="numeric"' : "") + ">"),
+      '<button class="btn ghost" data-x type="button">Отмена</button><button class="btn" data-ok type="button">Поставить</button>');
+    $("[data-x]").onclick = closeSheet;
+    $("[data-ok]").onclick = () => {
+      let v = $("#btVal").value.trim();
+      if (type === "number") {
+        v = v.replace(/\D/g, "").slice(0, 2);
+        if (!v || +v < 1) return;
+      } else if (!v) return;
+      else v = v.slice(0, 24);
+      closeSheet();
+      cb(v);
+    };
+    setTimeout(() => $("#btVal").focus(), 50);
+  }
+  function dragLoop(move, up) {
+    window.addEventListener("pointermove", move, { passive: false });
+    const end = (e) => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", end);
+      window.removeEventListener("pointercancel", end);
+      up(e);
+    };
+    window.addEventListener("pointerup", end, { once: true });
+    window.addEventListener("pointercancel", end, { once: true });
+  }
+  function startMarkerDrag(e, svg, t, b, el) {
+    const mk = (b.markers || []).find((x) => x.id === el.dataset.marker);
+    if (!mk) return;
+    el.classList.add("selected");
+    const move = (ev) => {
+      if (ev.cancelable) ev.preventDefault();
+      const p = svgPoint(svg, ev);
+      el.setAttribute("transform", "translate(" + p.x + "," + p.y + ")");
+      mk._px = p.x; mk._py = p.y;
+    };
+    dragLoop(move, () => {
+      if (mk._px != null) { mk.x = r1(mk._px); mk.y = r1(mk._py); delete mk._px; delete mk._py; }
+      silentBoardSave(t, b);
+    });
+  }
+  function startDrawDrag(e, svg, t, b, el) {
+    const d = (b.drawings || []).find((x) => x.id === el.dataset.draw);
+    if (!d) return;
+    el.classList.add("selected");
+    const start = svgPoint(svg, e);
+    let dx = 0, dy = 0;
+    const move = (ev) => {
+      if (ev.cancelable) ev.preventDefault();
+      const p = svgPoint(svg, ev);
+      dx = p.x - start.x; dy = p.y - start.y;
+      el.setAttribute("transform", "translate(" + dx + "," + dy + ")");
+    };
+    dragLoop(move, () => {
+      dx = r1(dx); dy = r1(dy);
+      if (d.type === "arrow" || d.type === "line") { d.x1 = r1(d.x1 + dx); d.y1 = r1(d.y1 + dy); d.x2 = r1(d.x2 + dx); d.y2 = r1(d.y2 + dy); }
+      else if (d.type === "pen") d.points = (d.points || []).map((p) => [r1(p[0] + dx), r1(p[1] + dy)]);
+      else { d.x = r1(d.x + dx); d.y = r1(d.y + dy); }
+      silentBoardSave(t, b);
+    });
+  }
+  function startStroke(e, svg, t, b, start, type) {
+    const NS = "http://www.w3.org/2000/svg";
+    let preview, pts = [[r1(start.x), r1(start.y)]], end = start;
+    if (type === "pen") {
+      preview = document.createElementNS(NS, "polyline");
+      preview.setAttribute("points", pts[0].join(","));
+    } else {
+      preview = document.createElementNS(NS, "line");
+      preview.setAttribute("x1", start.x); preview.setAttribute("y1", start.y);
+      preview.setAttribute("x2", start.x); preview.setAttribute("y2", start.y);
+    }
+    preview.setAttribute("class", "preview-line");
+    preview.setAttribute("stroke", S.boardColor);
+    svg.appendChild(preview);
+    const move = (ev) => {
+      if (ev.cancelable) ev.preventDefault();
+      const p = svgPoint(svg, ev);
+      if (type === "pen") {
+        const last = pts[pts.length - 1];
+        if (Math.hypot(p.x - last[0], p.y - last[1]) < 0.7) return;
+        pts.push([r1(p.x), r1(p.y)]);
+        preview.setAttribute("points", pts.map((q) => q.join(",")).join(" "));
+      } else {
+        end = p;
+        preview.setAttribute("x2", p.x); preview.setAttribute("y2", p.y);
+      }
+    };
+    dragLoop(move, () => {
+      preview.remove();
+      b.drawings = b.drawings || [];
+      if (type === "pen") {
+        if (pts.length < 2) return;
+        b.drawings.push({ id: uid("d"), type: "pen", points: pts, color: S.boardColor });
+      } else {
+        if (Math.hypot(end.x - start.x, end.y - start.y) < 2) return;
+        b.drawings.push({ id: uid("d"), type, x1: r1(start.x), y1: r1(start.y), x2: r1(end.x), y2: r1(end.y), color: S.boardColor });
+      }
+      silentBoardSave(t, b);
     });
   }
 
-  function openCaptainSettings() {
-    const team = activeTeam();
-    if (!team || !editMode) return;
-    closeModal();
-    const html = '<div class="modal" id="modal"><div class="modal-in"><p class="modal-kicker">Капитан · ' + esc(team.name) + '</p><h3>Настройки команды</h3>' +
-      '<div class="settings-group"><h4>Название и первый экран игроков</h4><form id="teamNameForm"><label class="field"><span>Название команды</span><input id="teamNameInput" maxlength="40" value="' + attr(team.name) + '" required></label><div class="radio-row" style="margin-top:10px"><label class="radio-card"><input type="radio" name="startScreen" value="tasks"' + (team.settings.start !== "maps" ? " checked" : "") + '> Сначала задачи</label><label class="radio-card"><input type="radio" name="startScreen" value="maps"' + (team.settings.start === "maps" ? " checked" : "") + '> Сначала карты</label></div><div class="row"><button class="btn tiny" type="submit">Сохранить</button></div></form></div>' +
-      '<div class="settings-group"><h4>Доступ</h4><p class="muted">Командный пароль — для игроков. PIN — только для капитана.</p><div class="row"><button class="btn ghost tiny" id="changePass" type="button">Сменить пароль</button><button class="btn ghost tiny" id="changePin" type="button">Сменить PIN</button></div><div class="row"><button class="btn ghost tiny" id="forgetDevice" type="button">Забыть это устройство</button><button class="btn ghost tiny" id="switchTeam" type="button">Сменить команду</button></div></div>' +
-      '<div class="settings-group"><h4>Опасная зона</h4><div class="row"><button class="btn warn tiny" id="resetTeam" type="button">Сбросить тактики</button><button class="btn warn tiny" id="deleteTeam" type="button">Удалить команду</button></div></div>' +
-      '<div class="row"><button class="btn ghost" id="mClose" type="button">Закрыть</button></div></div></div>';
-    document.body.insertAdjacentHTML("beforeend", html);
-    $("#mClose").onclick = closeModal;
-    $("#modal").onclick = (event) => { if (event.target.id === "modal") closeModal(); };
-    $("#teamNameForm").onsubmit = (event) => {
-      event.preventDefault();
-      team.name = $("#teamNameInput").value.trim().slice(0, 40) || team.name;
-      team.settings.start = ($('input[name="startScreen"]:checked') || {}).value === "maps" ? "maps" : "tasks";
-      save();
-      closeModal();
-      paintChrome();
-      render();
-      toast("Настройки сохранены");
-    };
-    $("#changePass").onclick = () => changeSecret("pass");
-    $("#changePin").onclick = () => changeSecret("pin");
-    $("#forgetDevice").onclick = () => {
-      team.captainUntil = 0;
-      save();
-      closeModal();
-      setEdit(false);
-      toast("Устройство забыто. В следующий раз понадобится PIN");
-    };
-    $("#switchTeam").onclick = () => { closeModal(); lockTeam(false); };
-    $("#resetTeam").onclick = () => {
-      if (!confirm("Сбросить все позиции, линии и тексты команды к базовой версии?")) return;
-      team.playbook = normalizeData(clone(BASE));
-      data = team.playbook;
-      save();
-      closeModal();
-      render();
-      toast("Тактики команды сброшены");
-    };
-    $("#deleteTeam").onclick = () => {
-      if (!confirm('Удалить команду "' + team.name + '" с этого устройства? Экспортируйте её заранее, если она нужна.')) return;
-      store.teams = store.teams.filter((item) => item.id !== team.id);
-      delete store.unlocked[team.id];
-      delete store.players[team.id];
-      if (store.activeId === team.id) store.activeId = store.teams.length ? store.teams[0].id : null;
-      editMode = false;
-      document.body.classList.remove("editing");
-      save();
-      closeModal();
-      stopBomb(true);
-      route();
+  /* ---------- players ---------- */
+  function viewPlayers() {
+    const view = $("#view");
+    let html = '<div class="pagehead"><div><h1>Игроки</h1><p class="sub">' + DB.cache.players.length + " чел.</p></div>" +
+      (isCap() ? '<div class="actions"><button class="btn tiny" data-addp type="button">+ Игрок</button></div>' : "") + "</div>";
+    html += '<div class="sec"><div class="sec-pad" style="padding:0;overflow-x:auto"><table class="ptable"><thead><tr><th>Игрок</th><th>Роль</th><th>Позиции</th>' +
+      (isCap() ? "<th></th>" : "") + "</tr></thead><tbody>";
+    if (!DB.cache.players.length) html += '<tr><td colspan="4" class="muted">Состав пуст.</td></tr>';
+    DB.cache.players.forEach((p, i) => {
+      html += '<tr data-prow="' + p.id + '"><td><span style="display:inline-flex;align-items:center;gap:8px"><span class="pnum" style="--pc:' +
+        esc(p.color || "#e8a72f") + '">' + (i + 1) + "</span><b>" + esc(p.name) + "</b>" +
+        (p.id === DB.myPlayerId() ? ' <span class="badge acc">вы</span>' : "") + "</span></td><td>" + esc(p.role || "—") + "</td><td class=\"muted\">" +
+        esc((p.positions || []).join(" · ") || "—") + "</td>" + (isCap() ? '<td><button class="menubtn" data-pmenu="' + p.id + '" type="button">⋮</button></td>' : "") + "</tr>";
+    });
+    html += "</tbody></table></div></div>";
+    view.innerHTML = html;
+    $$("[data-prow]", view).forEach((tr) => {
+      tr.onclick = (e) => { if (e.target.closest("[data-pmenu]")) return; go("#/player/" + tr.dataset.prow); };
+    });
+    $$("[data-pmenu]", view).forEach((b) => {
+      b.onclick = (e) => { e.stopPropagation(); playerMenu(b, b.dataset.pmenu); };
+    });
+    const add = $("[data-addp]", view);
+    if (add) add.onclick = () => sheetPlayer(null);
+  }
+
+  function playerMenu(anchor, id) {
+    const p = playerById(id);
+    if (!p) return;
+    openMenu(anchor, [
+      { label: "Открыть", onClick: () => go("#/player/" + id) },
+      { label: "Изменить", onClick: () => sheetPlayer(p) },
+      { sep: true },
+      { label: "Выше", onClick: () => moveRow("players", id, -1) },
+      { label: "Ниже", onClick: () => moveRow("players", id, 1) },
+      { sep: true },
+      { label: "Удалить", danger: true, onClick: () => confirmDlg('Удалить игрока «' + p.name + "»?", () => commit('удалил игрока «' + p.name + "»", null, () => DB.del("players", id))) },
+    ]);
+  }
+
+  function sheetPlayer(p) {
+    if (!isCap()) return;
+    const isNew = !p;
+    p = p || { name: "", role: "", positions: [], color: "#e8a72f", notes: "" };
+    const colors = ["#e8a72f", "#5da9ff", "#48cf8b", "#ef5d5d", "#b984ff", "#f2f4f7", "#f786b8", "#4cc9f0"];
+    openSheet(isNew ? "Новый игрок" : "Изменить игрока",
+      '<label class="field"><span>Ник</span><input id="plName" maxlength="24" value="' + esc(p.name) + '" placeholder="MAX"></label>' +
+      '<div class="field-row"><label class="field"><span>Роль</span><input id="plRole" list="roleList" maxlength="24" value="' + esc(p.role || "") + '" placeholder="IGL"></label>' +
+      '<label class="field"><span>Цвет</span><select id="plColor">' + colors.map((c) => '<option value="' + c + '"' + (p.color === c ? " selected" : "") + ">" + c + "</option>").join("") + "</select></label></div>" +
+      '<datalist id="roleList"><option>IGL</option><option>AWP</option><option>Entry</option><option>Support</option><option>Lurker</option><option>Anchor</option><option>Rifler</option></datalist>' +
+      '<label class="field"><span>Позиции (через запятую)</span><input id="plPos" maxlength="80" value="' + esc((p.positions || []).join(", ")) + '" placeholder="A, Ramp"></label>' +
+      '<label class="field"><span>Заметки</span><textarea id="plNotes">' + esc(p.notes || "") + "</textarea></label>",
+      '<button class="btn ghost" data-x type="button">Отмена</button><button class="btn" data-ok type="button">Сохранить</button>');
+    $("[data-x]").onclick = closeSheet;
+    $("[data-ok]").onclick = async () => {
+      const name = $("#plName").value.trim();
+      if (!name) return;
+      const payload = {
+        name, role: $("#plRole").value.trim(), color: $("#plColor").value,
+        positions: $("#plPos").value.split(",").map((s) => s.trim()).filter(Boolean).slice(0, 10),
+        notes: $("#plNotes").value.trim(),
+      };
+      if (!isNew) payload.id = p.id;
+      const saved = await commit((isNew ? "добавил игрока «" : "изменил игрока «") + name + "»", isNew ? null : { kind: "player", id: p.id }, () => DB.save("players", payload));
+      if (saved !== null) { closeSheet(); if (isNew) go("#/player/" + saved.id); }
     };
   }
 
-  function changeSecret(kind) {
-    const team = activeTeam();
-    if (!team || !editMode) return;
-    const isPass = kind === "pass";
-    closeModal();
-    const html = '<div class="modal" id="modal"><div class="modal-in narrow"><p class="modal-kicker">Капитан · ' + esc(team.name) + '</p><h3>' + (isPass ? "Новый командный пароль" : "Новый PIN капитана") + '</h3><p class="muted">' + (isPass ? "После смены сообщите новый пароль всем игрокам." : "Старое запоминание устройства будет обновлено.") + '</p><form id="secretForm"><label class="field"><span>Новое значение</span><input id="secret1" type="password" ' + (isPass ? "" : 'inputmode="numeric" ') + 'minlength="4" autocomplete="new-password" required></label><label class="field"><span>Повторите</span><input id="secret2" type="password" ' + (isPass ? "" : 'inputmode="numeric" ') + 'minlength="4" autocomplete="new-password" required></label><div class="form-error" id="secretError"></div><div class="row"><button class="btn" type="submit">Сохранить</button><button class="btn ghost" id="mClose" type="button">Отмена</button></div></form></div></div>';
-    document.body.insertAdjacentHTML("beforeend", html);
-    $("#mClose").onclick = openCaptainSettings;
-    $("#modal").onclick = (event) => { if (event.target.id === "modal") openCaptainSettings(); };
-    $("#secretForm").onsubmit = async (event) => {
-      event.preventDefault();
-      const first = $("#secret1").value;
-      const second = $("#secret2").value;
-      const error = $("#secretError");
-      if (first.length < 4) { error.textContent = "Минимум 4 символа."; return; }
-      if (first !== second) { error.textContent = "Значения не совпадают."; return; }
-      if (isPass && team.pin) {
-        const pinCheck = await passwordHash(first, team.pin.salt);
-        if (pinCheck === team.pin.hash) { error.textContent = "Пароль и PIN должны различаться."; return; }
-      }
-      if (!isPass && team.pass) {
-        const passCheck = await passwordHash(first, team.pass.salt);
-        if (passCheck === team.pass.hash) { error.textContent = "Пароль и PIN должны различаться."; return; }
-      }
-      const salt = randomSalt();
-      const hash = await passwordHash(first, salt);
-      if (isPass) {
-        team.pass = { salt, hash };
-        store.unlocked[team.id] = hash;
-      } else {
-        team.pin = { salt, hash };
-        team.captainUntil = Date.now() + CAPTAIN_REMEMBER_MS;
-      }
-      save();
-      openCaptainSettings();
-      toast(isPass ? "Пароль команды изменён" : "PIN капитана изменён");
-    };
+  function viewPlayer(id) {
+    const p = playerById(id);
+    const view = $("#view");
+    if (!p) { go("#/players"); return; }
+    const inv = involvement(p.id);
+    const isMe = p.id === DB.myPlayerId();
+    let html = '<a class="backlink" href="#/players">← Игроки</a><div class="pagehead"><div><h1>' + esc(p.name) +
+      (isMe ? ' <span class="badge acc">это вы</span>' : "") + "</h1>" +
+      '<p class="sub">' + esc([p.role || null, (p.positions || []).join(" / ") || null].filter(Boolean).join(" · ") || "Игрок") + "</p></div>" +
+      '<div class="actions"><button class="starbtn' + (DB.isFav("player", p.id) ? " on" : "") + '" data-fav type="button" style="font-size:20px">★</button>' +
+      (isCap() ? '<button class="menubtn" data-pm type="button">⋮</button>' : "") + "</div></div>";
+    html += '<div class="sec"><div class="sec-pad"><dl class="kv" style="padding:0">' +
+      "<dt>Роль</dt><dd>" + esc(p.role || "—") + "</dd>" +
+      "<dt>Позиции</dt><dd>" + esc((p.positions || []).join(" · ") || "—") + "</dd></dl>" +
+      (p.notes ? '<div class="divider"></div><div class="tiny muted">Заметки</div><div class="note-text" style="padding:4px 0">' + esc(p.notes) + "</div>" : "") + "</div></div>";
+    html += involvedSection("Тактики игрока", inv.tactics);
+    // Задачи
+    html += '<div class="sec"><div class="sec-head"><h2>Задачи · ' + inv.tasks.length + "</h2></div><div class=\"sec-body\">";
+    if (!inv.tasks.length) html += '<div class="empty">Задач нет.</div>';
+    inv.tasks.forEach((r) => {
+      const m = mapById(r.tactic.map_id);
+      html += '<a class="row" href="#/tactic/' + r.tactic.id + '"><span class="row-main"><b>' + esc(r.item.task || r.item.role || "Задача") + "</b><small>" +
+        esc(r.tactic.name + (m ? " · " + m.name : "")) + "</small></span><span class=\"row-arrow\">›</span></a>";
+    });
+    html += "</div></div>";
+    // Гранаты
+    html += '<div class="sec"><div class="sec-head"><h2>Гранаты · ' + inv.nades.length + "</h2></div><div class=\"sec-body\">";
+    if (!inv.nades.length) html += '<div class="empty">Гранаты не назначены.</div>';
+    inv.nades.forEach((r) => {
+      html += '<a class="row" href="#/tactic/' + r.tactic.id + '"><span class="row-main"><b>' + (NADE_ICON[r.item.kind] || "") + " " + esc(r.item.name || nadeName(r.item.kind)) +
+        "</b><small>" + esc(r.tactic.name) + "</small></span><span class=\"row-arrow\">›</span></a>";
+    });
+    html += "</div></div>";
+    if (!isMe && (DB.team.settings.allowSwitchPlayer !== false || isCap())) {
+      html += '<div class="btnrow"><button class="btn ghost block" data-makeme type="button">Это я — выбрать профиль</button></div>';
+    }
+    view.innerHTML = html;
+    $("[data-fav]", view).onclick = () => { DB.toggleFav("player", p.id, p.name); render(); };
+    const pm = $("[data-pm]", view);
+    if (pm) pm.onclick = (e) => { e.stopPropagation(); playerMenu(pm, p.id); };
+    const mk = $("[data-makeme]", view);
+    if (mk) mk.onclick = () => { DB.setMyPlayer(p.id); toast("Привет, " + p.name, "ok"); go("#/me"); };
+  }
+  function involvedSection(title, tactics) {
+    let html = '<div class="sec"><div class="sec-head"><h2>' + esc(title) + " · " + tactics.length + "</h2></div><div class=\"sec-body\">";
+    if (!tactics.length) html += '<div class="empty">Нет.</div>';
+    tactics.forEach((t) => { html += tacticRowHTML(t, mapById(t.map_id)); });
+    return html + "</div></div>";
   }
 
-  /* ---------- экспорт / импорт ---------- */
-  function exportTeam() {
-    const team = activeTeam();
-    if (!team || !editMode) return;
-    const payload = { app: "cs2-playbook-team", exportedAt: new Date().toISOString(), team };
-    const text = JSON.stringify(payload);
-    closeModal();
-    const html = '<div class="modal" id="modal"><div class="modal-in"><p class="modal-kicker">Капитан · ' + esc(team.name) + '</p><h3>Экспорт команды</h3><p class="muted">Отправьте файл игрокам: после импорта они войдут по командному паролю и увидят ваши тактики. Сами пароли в файл не входят — только их проверочные хеши.</p><textarea id="expTa" readonly>' + esc(text) + '</textarea><div class="row"><button class="btn" id="cpBtn" type="button">Скопировать</button><button class="btn ghost" id="dlBtn" type="button">Скачать файл</button><button class="btn ghost" id="mClose" type="button">Закрыть</button></div></div></div>';
-    document.body.insertAdjacentHTML("beforeend", html);
-    $("#cpBtn").onclick = async () => {
-      const textarea = $("#expTa");
-      try { await navigator.clipboard.writeText(textarea.value); } catch (error) { textarea.select(); document.execCommand("copy"); }
-      $("#cpBtn").textContent = "Скопировано";
-    };
-    $("#dlBtn").onclick = () => {
-      try {
-        const blob = new Blob([text], { type: "application/json" });
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement("a");
-        link.href = url;
-        link.download = "cs2-" + team.name.replace(/[^\wа-яё-]+/gi, "-").toLowerCase() + ".json";
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
-        setTimeout(() => URL.revokeObjectURL(url), 2000);
-      } catch (error) {
-        toast("Не получилось скачать — скопируйте текст");
-      }
-    };
-    $("#mClose").onclick = closeModal;
-  }
-
-  function importModal() {
-    closeModal();
-    const html = '<div class="modal" id="modal"><div class="modal-in"><p class="modal-kicker">Файл от капитана</p><h3>Импорт команды</h3><p class="muted">Вставьте JSON команды. После импорта вход — по командному паролю.</p><textarea id="impTa" placeholder="{ ... }"></textarea><div class="form-error" id="importError"></div><div class="row"><button class="btn" id="doImp" type="button">Загрузить</button><button class="btn ghost" id="mClose" type="button">Закрыть</button></div></div></div>';
-    document.body.insertAdjacentHTML("beforeend", html);
-    $("#doImp").onclick = () => {
-      try {
-        const value = JSON.parse($("#impTa").value);
-        // Новый формат: целая команда.
-        if (value && value.app === "cs2-playbook-team" && value.team && value.team.pass && value.team.playbook) {
-          const incoming = value.team;
-          incoming.playbook = normalizeData(incoming.playbook);
-          incoming.settings = incoming.settings || { start: "tasks" };
-          incoming.captainUntil = 0;
-          const existing = teamById(incoming.id);
-          if (existing) {
-            if (!confirm('Команда "' + existing.name + '" уже есть на устройстве. Заменить её данными из файла?')) return;
-            const index = store.teams.indexOf(existing);
-            store.teams[index] = incoming;
-          } else {
-            store.teams.push(incoming);
-          }
-          delete store.unlocked[incoming.id];
-          store.activeId = incoming.id;
-          gateTeamId = incoming.id;
-          save();
-          closeModal();
-          setEdit(false);
-          stopBomb(true);
-          route();
-          toast('Команда "' + incoming.name + '" загружена. Введите пароль');
-          return;
-        }
-        // Старый формат: только плейбук — кладём в активную команду (нужен режим капитана).
-        if (value && value.players && value.maps) {
-          const team = activeTeam();
-          if (!team || !editMode) throw new Error("need-captain");
-          team.playbook = normalizeData(value);
-          data = team.playbook;
-          save();
-          closeModal();
-          render();
-          toast("Плейбук импортирован");
-          return;
-        }
-        throw new Error("invalid");
-      } catch (error) {
-        $("#importError").textContent = error && error.message === "need-captain"
-          ? "Старый формат: сначала войдите в команду и откройте режим капитана."
-          : "Файл не похож на экспорт этого плейбука.";
-      }
-    };
-    $("#mClose").onclick = closeModal;
-  }
-
-  /* ================= жизненный цикл ================= */
-  function render() {
-    if (isLocked()) {
-      const team = activeTeam();
-      if (!team || teamNeedsSetup(team)) renderSetupGate();
-      else renderGate();
+  /* ---------- my profile ---------- */
+  function viewMe() {
+    const p = playerById(DB.myPlayerId());
+    const view = $("#view");
+    if (!p) {
+      // Кто ты?
+      let html = '<div class="pagehead"><div><h1>Кто ты?</h1><p class="sub">Выберите себя один раз — дальше профиль откроется сам</p></div></div>';
+      html += '<div class="sec"><div class="sec-body">';
+      if (!DB.cache.players.length) html += '<div class="empty">Состав пуст — капитан ещё не добавил игроков.</div>';
+      DB.cache.players.forEach((x) => {
+        html += '<button class="row" data-pick="' + x.id + '" type="button"><span class="pnum" style="--pc:' + esc(x.color || "#e8a72f") + '">' +
+          (DB.cache.players.indexOf(x) + 1) + '</span><span class="row-main"><b>' + esc(x.name) + "</b>" + (x.role ? "<small>" + esc(x.role) + "</small>" : "") + "</span></button>";
+      });
+      html += "</div></div>";
+      html += '<div class="btnrow"><button class="btn ghost block" data-skip type="button">Пропустить</button></div>';
+      view.innerHTML = html;
+      $$("[data-pick]", view).forEach((b) => {
+        b.onclick = () => { DB.setMyPlayer(b.dataset.pick); toast("Привет, " + myName(), "ok"); go("#/overview"); };
+      });
+      $("[data-skip]", view).onclick = () => go("#/overview");
       return;
     }
-    const team = activeTeam();
-    data = team.playbook;
-    const parts = parseHash();
-    if (parts[0] === "map" && mapById(parts[1])) renderMapPage();
-    else if ((parts[0] === "player" && playerById(parts[1])) || parts[0] === "me") {
-      if (parts[0] === "me") ui.player = myPlayerId();
-      renderPlayerPage();
+    const inv = involvement(p.id);
+    let html = '<div class="pagehead"><div><p class="autheye" style="margin:0 0 2px">ТВОЙ ПРОФИЛЬ</p><h1>' + esc(p.name) + "</h1>" +
+      '<p class="sub">' + esc([p.role || null, (p.positions || []).join(" / ") || null].filter(Boolean).join(" · ") || "Игрок") + "</p></div></div>";
+    html += '<div class="sec"><div class="sec-head"><h2>Мои тактики · ' + inv.tactics.length + "</h2></div><div class=\"sec-body\">";
+    if (!inv.tactics.length) html += '<div class="empty">Пока нет.</div>';
+    inv.tactics.slice(0, 10).forEach((t) => { html += tacticRowHTML(t, mapById(t.map_id)); });
+    html += "</div></div>";
+    html += '<div class="sec"><div class="sec-head"><h2>Мои задачи · ' + inv.tasks.length + "</h2></div><div class=\"sec-body\">";
+    if (!inv.tasks.length) html += '<div class="empty">Пока нет.</div>';
+    inv.tasks.slice(0, 20).forEach((r) => {
+      html += '<a class="row" href="#/tactic/' + r.tactic.id + '"><span class="row-main"><b>' + esc(r.item.task || r.item.role || "Задача") + "</b><small>" +
+        esc(r.tactic.name) + (r.item.note ? " · " + r.item.note : "") + "</small></span><span class=\"row-arrow\">›</span></a>";
+    });
+    html += "</div></div>";
+    html += '<div class="sec"><div class="sec-head"><h2>Мои гранаты · ' + inv.nades.length + "</h2></div><div class=\"sec-body\">";
+    if (!inv.nades.length) html += '<div class="empty">Пока нет.</div>';
+    inv.nades.slice(0, 20).forEach((r) => {
+      html += '<a class="row" href="#/tactic/' + r.tactic.id + '"><span class="row-main"><b>' + (NADE_ICON[r.item.kind] || "") + " " + esc(r.item.name || nadeName(r.item.kind)) +
+        "</b><small>" + esc(r.tactic.name + (((r.item.steps || []).length) ? " · " + r.item.steps.length + " шаг." : "")) + "</small></span><span class=\"row-arrow\">›</span></a>";
+    });
+    html += "</div></div>";
+    if (DB.team.settings.allowSwitchPlayer !== false || isCap()) {
+      html += '<div class="btnrow"><button class="btn ghost block" data-switch type="button">Сменить профиль</button></div>';
     }
-    else if (parts[0] === "maps") renderMapsPage();
-    else if (parts[0] === "team") renderTeamPage();
-    else if (parts[0] === "profile") renderProfilePage();
-    else { location.hash = startRoute(); route(); }
+    view.innerHTML = html;
+    const sw = $("[data-switch]", view);
+    if (sw) sw.onclick = () => { DB.setMyPlayer(null); render(); };
+  }
+
+  /* ---------- materials ---------- */
+  const MAT_ICON = { image: "🖼", video: "🎥", gif: "🎞", link: "🔗", note: "📝", pdf: "📄", demo: "💾" };
+  function viewMaterials() {
+    const view = $("#view");
+    const f = S.mfilter;
+    const types = ["image", "video", "gif", "link", "note", "pdf", "demo"].filter((tp) => DB.cache.materials.some((m) => m.type === tp));
+    let html = '<div class="pagehead"><div><h1>Материалы</h1><p class="sub">' + DB.cache.materials.length + " шт.</p></div>" +
+      (isCap() ? '<div class="actions"><button class="btn tiny" data-addm type="button">+ Материал</button></div>' : "") + "</div>";
+    if (types.length > 1) {
+      html += '<div class="chiprow"><button class="chip' + (!f.type ? " on" : "") + '" data-f="type:" type="button">Все</button>';
+      types.forEach((tp) => {
+        html += '<button class="chip' + (f.type === tp ? " on" : "") + '" data-f="type:' + tp + '" type="button">' + (MAT_ICON[tp] || "") + " " + esc(matTypeName(tp)) + "</button>";
+      });
+      html += "</div>";
+    }
+    if (DB.cache.maps.length > 1) {
+      html += '<div class="chiprow"><button class="chip' + (!f.map ? " on" : "") + '" data-f="map:" type="button">Все карты</button>';
+      DB.cache.maps.forEach((m) => {
+        html += '<button class="chip' + (f.map === m.id ? " on" : "") + '" data-f="map:' + m.id + '" type="button">' + esc(m.name) + "</button>";
+      });
+      html += "</div>";
+    }
+    const list = DB.cache.materials.filter((m) => (!f.type || m.type === f.type) && (!f.map || m.map_id === f.map));
+    html += '<div class="sec"><div class="sec-body">';
+    if (!list.length) html += '<div class="empty">Материалов нет.</div>';
+    list.forEach((m) => { html += materialRowHTML(m, false); });
+    html += "</div></div>";
+    view.innerHTML = html;
+    $$("[data-f]", view).forEach((b) => {
+      b.onclick = () => { const [k, v] = b.dataset.f.split(/:(.+)/); S.mfilter[k] = v || ""; render(); };
+    });
+    const add = $("[data-addm]", view);
+    if (add) add.onclick = () => sheetMaterial(null);
+    bindMaterialRows(view);
+    if (S.pendingMaterial) {
+      const pm = materialById(S.pendingMaterial);
+      S.pendingMaterial = null;
+      if (pm) setTimeout(() => openMaterial(pm), 60);
+    }
+  }
+  function matTypeName(tp) {
+    return { image: "Фото", video: "Видео", gif: "GIF", link: "Ссылка", note: "Заметка", pdf: "PDF", demo: "Демо" }[tp] || tp;
+  }
+  function materialRowHTML(m, inMap) {
+    const map = mapById(m.map_id);
+    return '<div class="row" style="cursor:default"><button class="row-main" data-mopen="' + m.id + '" style="display:flex;gap:10px;align-items:center;background:none;border:0;padding:0;text-align:left;flex:1;min-width:0;cursor:pointer">' +
+      '<span class="matic">' + (MAT_ICON[m.type] || "📎") + '</span><span style="min-width:0"><b style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(m.title) +
+      "</b>" + (map || m.description ? "<small class=\"muted\" style=\"display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap\">" + esc([map ? map.name : null, m.description || null].filter(Boolean).join(" · ")) + "</small>" : "") + "</span></button>" +
+      '<span class="row-side"><button class="starbtn' + (DB.isFav("material", m.id) ? " on" : "") + '" data-mfav="' + m.id + '" type="button">★</button>' +
+      (isCap() ? '<button class="menubtn" data-mmenu="' + m.id + '" type="button">⋮</button>' : "") + "</span></div>";
+  }
+  function bindMaterialRows(view) {
+    $$("[data-mopen]", view).forEach((b) => {
+      b.onclick = () => { const m = materialById(b.dataset.mopen); if (m) openMaterial(m); };
+    });
+    $$("[data-mfav]", view).forEach((b) => {
+      b.onclick = () => { const m = materialById(b.dataset.mfav); if (m) { DB.toggleFav("material", m.id, m.title); render(); } };
+    });
+    $$("[data-mmenu]", view).forEach((b) => {
+      b.onclick = (e) => { e.stopPropagation(); materialMenu(b, b.dataset.mmenu); };
+    });
+  }
+  function openMaterial(m) {
+    if (m.type === "image" || m.type === "gif") {
+      if (m.url) openViewer(m.url, m.title);
+      else toast("Нет файла", "warn");
+    } else if (m.type === "note") {
+      openSheet(m.title, '<div class="note-text" style="padding:8px 0">' + esc(m.description || m.url || "") + "</div>",
+        '<button class="btn ghost" data-x type="button">Закрыть</button>' + (isCap() ? '<button class="btn" data-ed type="button">Изменить</button>' : ""));
+      $("[data-x]").onclick = closeSheet;
+      const ed = $("[data-ed]");
+      if (ed) ed.onclick = () => sheetMaterial(m);
+    } else if (m.url) {
+      window.open(m.url, "_blank", "noopener");
+    } else toast("Нет ссылки", "warn");
+  }
+  function materialMenu(anchor, id) {
+    const m = materialById(id);
+    if (!m) return;
+    openMenu(anchor, [
+      { label: "Открыть", onClick: () => openMaterial(m) },
+      { label: "Изменить", onClick: () => sheetMaterial(m) },
+      { sep: true },
+      { label: "Выше", onClick: () => moveRow("materials", id, -1) },
+      { label: "Ниже", onClick: () => moveRow("materials", id, 1) },
+      { sep: true },
+      { label: "Удалить", danger: true, onClick: () => confirmDlg('Удалить «' + m.title + "»?", () => commit('удалил материал «' + m.title + "»", null, () => DB.del("materials", id))) },
+    ]);
+  }
+  function sheetMaterial(m) {
+    if (!isCap()) return;
+    const isNew = !m;
+    m = m || { type: "link", title: "", url: "", description: "", map_id: null };
+    openSheet(isNew ? "Новый материал" : "Изменить материал",
+      '<div class="field-row"><label class="field"><span>Тип</span><select id="mtType">' +
+      ["link", "image", "video", "gif", "note", "pdf", "demo"].map((tp) => '<option value="' + tp + '"' + (m.type === tp ? " selected" : "") + ">" + (MAT_ICON[tp] || "") + " " + matTypeName(tp) + "</option>").join("") + "</select></label>" +
+      '<label class="field"><span>Карта</span><select id="mtMap"><option value="">— Общая —</option>' +
+      DB.cache.maps.map((x) => '<option value="' + x.id + '"' + (m.map_id === x.id ? " selected" : "") + ">" + esc(x.name) + "</option>").join("") + "</select></label></div>" +
+      '<label class="field"><span>Название</span><input id="mtTitle" maxlength="80" value="' + esc(m.title) + '"></label>' +
+      '<label class="field"><span>Ссылка / файл</span><input id="mtUrl" maxlength="500" value="' + esc(m.url || "") + '" placeholder="https://…"></label>' +
+      '<div class="btnrow"><button class="btn ghost tiny" id="mtUpload" type="button">Загрузить файл</button><input type="file" id="mtFile" hidden></div>' +
+      '<label class="field"><span>Описание / текст заметки</span><textarea id="mtDesc">' + esc(m.description || "") + "</textarea></label>",
+      '<button class="btn ghost" data-x type="button">Отмена</button><button class="btn" data-ok type="button">Сохранить</button>');
+    $("[data-x]").onclick = closeSheet;
+    $("#mtUpload").onclick = () => $("#mtFile").click();
+    $("#mtFile").onchange = async (e) => {
+      const file = e.target.files && e.target.files[0];
+      if (!file) return;
+      saveState("saving");
+      try {
+        const up = await DB.adapter.uploadImage(DB.team.id, file);
+        $("#mtUrl").value = up.url;
+        saveState("saved");
+        toast("Файл загружен", "ok");
+      } catch (err) { saveState(""); toast((err && err.message) || "Не загрузилось", "warn"); }
+    };
+    $("[data-ok]").onclick = async () => {
+      const title = $("#mtTitle").value.trim();
+      if (!title) return;
+      const payload = {
+        type: $("#mtType").value, title, url: $("#mtUrl").value.trim(),
+        description: $("#mtDesc").value.trim(), map_id: $("#mtMap").value || null,
+      };
+      if (!isNew) payload.id = m.id;
+      const ok = await commit((isNew ? "добавил материал «" : "изменил материал «") + title + "»", null, () => DB.save("materials", payload));
+      if (ok !== null) closeSheet();
+    };
+  }
+
+  /* ---------- manage (капитанская панель) ---------- */
+  function viewManage() {
+    const view = $("#view");
+    if (!isCap()) {
+      view.innerHTML = '<div class="pagehead"><div><h1>Управление</h1><p class="sub">Раздел капитана</p></div></div>' +
+        '<div class="sec"><div class="sec-pad"><p class="muted">Здесь капитан меняет состав, карты, тактики и настройки команды.</p>' +
+        '<div class="btnrow"><button class="btn block" data-capin type="button">Ввести PIN капитана</button></div></div></div>';
+      $("[data-capin]", view).onclick = () => askCaptainPin("");
+      return;
+    }
+    const cloud = DB.mode() === "cloud";
+    let html = '<div class="pagehead"><div><h1>Управление</h1><p class="sub">' + esc(DB.team.name) + "</p></div></div>";
+
+    // Команда
+    html += '<div class="sec"><div class="sec-head"><h2>Команда</h2><button class="more" data-teamedit type="button">Изменить</button></div>' +
+      '<div class="sec-pad"><dl class="kv" style="padding:0"><dt>Название</dt><dd>' + esc(DB.team.name) + "</dd>" +
+      "<dt>Капитан</dt><dd>" + esc(DB.team.captainName || "—") + "</dd>" +
+      "<dt>Смена профиля</dt><dd>" + (DB.team.settings.allowSwitchPlayer !== false ? "игрокам разрешена" : "запрещена") + "</dd></dl>" +
+      '<div class="btnrow"><button class="btn ghost tiny" data-pinteam type="button">Сменить PIN команды</button>' +
+      '<button class="btn ghost tiny" data-pincap type="button">Сменить PIN капитана</button></div></div></div>';
+
+    // Быстрые действия
+    html += '<div class="sec"><div class="sec-head"><h2>Быстрое создание</h2></div><div class="sec-pad"><div class="btnrow" style="margin-top:0">' +
+      '<button class="btn ghost tiny" data-q="player" type="button">+ Игрок</button>' +
+      '<button class="btn ghost tiny" data-q="map" type="button">+ Карта</button>' +
+      '<button class="btn ghost tiny" data-q="tactic" type="button">+ Тактика</button>' +
+      '<button class="btn ghost tiny" data-q="material" type="button">+ Материал</button></div></div></div>';
+
+    // Шаблоны
+    html += '<div class="sec"><div class="sec-head"><h2>Шаблоны тактик · ' + DB.cache.templates.length + "</h2></div><div class=\"sec-body\">";
+    if (!DB.cache.templates.length) html += '<div class="empty">Шаблонов нет. Сохраните тактику как шаблон из её меню ⋮.</div>';
+    DB.cache.templates.forEach((tp) => {
+      html += '<div class="row" style="cursor:default"><span class="row-main"><b>' + esc(tp.name) + "</b><small>" + (tp.blocks || []).length + " бл.</small></span>" +
+        '<span class="row-side"><button class="menubtn" data-tplmenu="' + tp.id + '" type="button">⋮</button></span></div>';
+    });
+    html += "</div></div>";
+
+    // Облако
+    html += '<div class="sec"><div class="sec-head"><h2>Облако</h2></div><div class="sec-pad">' +
+      (cloud
+        ? '<p class="muted tiny">Синхронизация включена. Правки капитана прилетают игрокам сами.</p>'
+        : '<p class="muted tiny">Облако не подключено: каждый видит только своё устройство. Подключите Supabase по инструкции SETUP.md ' +
+          "(файл supabase-config.js), либо введите ключи ниже для проверки на этом устройстве.</p>") +
+      '<div class="btnrow"><button class="btn ghost tiny" data-cloud type="button">' + (cloud ? "Проверить / сменить ключи" : "Подключить облако") + "</button></div></div></div>";
+
+    // Журнал
+    html += '<div class="sec"><div class="sec-head"><h2>Журнал изменений</h2></div><div class="sec-body">';
+    const feed = DB.cache.activity.slice(0, 30);
+    if (!feed.length) html += '<div class="empty">Пока тихо.</div>';
+    feed.forEach((a) => { html += activityRowHTML(a); });
+    html += "</div></div>";
+
+    // Опасная зона
+    html += '<div class="sec"><div class="sec-head"><h2>Опасная зона</h2></div><div class="sec-pad"><div class="btnrow" style="margin-top:0">' +
+      '<button class="btn ghost tiny" data-logout type="button">Выйти из команды</button>' +
+      '<button class="btn danger tiny" data-delteam type="button">Удалить команду</button></div></div></div>';
+
+    view.innerHTML = html;
+    $$("[data-act]", view).forEach((b) => {
+      b.onclick = () => { const [k, id] = b.dataset.act.split(":"); if (k && id) openRef(k, id); };
+    });
+    $("[data-teamedit]", view).onclick = sheetTeamEdit;
+    $("[data-pinteam]", view).onclick = () => sheetChangePin("team");
+    $("[data-pincap]", view).onclick = () => sheetChangePin("captain");
+    $$("[data-q]", view).forEach((b) => {
+      b.onclick = () => {
+        const q = b.dataset.q;
+        if (q === "player") sheetPlayer(null);
+        else if (q === "map") sheetMap(null);
+        else if (q === "tactic") sheetNewTactic(null);
+        else if (q === "material") sheetMaterial(null);
+      };
+    });
+    $$("[data-tplmenu]", view).forEach((b) => {
+      b.onclick = (e) => { e.stopPropagation(); templateMenu(b, b.dataset.tplmenu); };
+    });
+    $("[data-cloud]", view).onclick = sheetCloud;
+    $("[data-export]", view).onclick = exportTeam;
+    $("[data-import]", view).onclick = () => $("[data-impfile]", view).click();
+    $("[data-impfile]", view).onchange = (e) => {
+      const f = e.target.files && e.target.files[0];
+      if (f) importTeam(f);
+    };
+    $("[data-logout]", view).onclick = doLogout;
+    $("[data-delteam]", view).onclick = () => confirmDlg('Удалить команду «' + DB.team.name + "» со всеми данными?", async () => {
+      saveState("saving");
+      try {
+        await DB.adapter.deleteTeam(DB.team.id);
+        saveState("");
+        doLogout();
+        toast("Команда удалена");
+      } catch (e) { saveState(""); toast((e && e.message) || "Не удалилось", "warn"); }
+    });
+  }
+
+  function templateMenu(anchor, id) {
+    const tp = DB.cache.templates.find((t) => t.id === id);
+    if (!tp) return;
+    openMenu(anchor, [
+      { label: "Переименовать", onClick: () => {
+        openSheet("Переименовать шаблон", fld("Название", '<input id="tpName" maxlength="60" value="' + esc(tp.name) + '">'),
+          '<button class="btn ghost" data-x type="button">Отмена</button><button class="btn" data-ok type="button">Сохранить</button>');
+        $("[data-x]").onclick = closeSheet;
+        $("[data-ok]").onclick = async () => {
+          const ok = await commit(null, null, () => DB.save("templates", { id: tp.id, name: $("#tpName").value.trim() || tp.name }));
+          if (ok !== null) closeSheet();
+        };
+      } },
+      { label: "Новая тактика из шаблона", onClick: () => {
+        openSheet("Тактика из шаблона «" + tp.name + "»",
+          fld("Название", '<input id="ttName" maxlength="60" placeholder="A Execute">') +
+          fld("Карта", '<select id="ttMap"><option value="">— Без карты —</option>' + DB.cache.maps.map((m) => '<option value="' + m.id + '">' + esc(m.name) + "</option>").join("") + "</select>"),
+          '<button class="btn ghost" data-x type="button">Отмена</button><button class="btn" data-ok type="button">Создать</button>');
+        $("[data-x]").onclick = closeSheet;
+        $("[data-ok]").onclick = async () => {
+          const name = $("#ttName").value.trim();
+          if (!name) return;
+          const created = await commit('создал тактику «' + name + "» из шаблона", null, () => DB.save("tactics", {
+            name, map_id: $("#ttMap").value || null, side: "T", category: "", description: "", blocks: reIdBlocks(clone(tp.blocks || [])),
+          }));
+          if (created) { closeSheet(); go("#/tactic/" + created.id); }
+        };
+      } },
+      { sep: true },
+      { label: "Удалить", danger: true, onClick: () => confirmDlg('Удалить шаблон «' + tp.name + "»?", () => commit(null, null, () => DB.del("templates", id))) },
+    ]);
+  }
+
+  function sheetTeamEdit() {
+    const st = DB.team.settings || {};
+    openSheet("Команда",
+      fld("Название", '<input id="teName" maxlength="40" value="' + esc(DB.team.name) + '">') +
+      fld("Имя капитана", '<input id="teCap" maxlength="24" value="' + esc(DB.team.captainName || "") + '">') +
+      '<label class="field" style="display:flex;gap:8px;align-items:center"><input id="teSwitch" type="checkbox" style="width:18px;height:18px"' + (st.allowSwitchPlayer !== false ? " checked" : "") + '><span style="margin:0">Игроки могут менять профиль</span></label>',
+      '<button class="btn ghost" data-x type="button">Отмена</button><button class="btn" data-ok type="button">Сохранить</button>');
+    $("[data-x]").onclick = closeSheet;
+    $("[data-ok]").onclick = async () => {
+      saveState("saving");
+      try {
+        DB.team = await DB.adapter.updateTeam(DB.team.id, {
+          name: $("#teName").value.trim(),
+          captainName: $("#teCap").value.trim(),
+          settings: { allowSwitchPlayer: $("#teSwitch").checked },
+        });
+        DB.persistSession();
+        await DB.log("изменил настройки команды", null);
+        saveState("saved");
+        closeSheet();
+        render();
+      } catch (e) { saveState(""); toast((e && e.message) || "Не сохранилось", "warn"); }
+    };
+  }
+
+  function sheetChangePin(kind) {
+    const isTeam = kind === "team";
+    openSheet(isTeam ? "Новый PIN команды" : "Новый PIN капитана",
+      (isTeam ? '<p class="muted tiny">Сообщите новый PIN всем игрокам.</p>' : "") +
+      fld("Новый PIN", '<input id="pin1" type="password" inputmode="numeric" minlength="4" maxlength="32" autocomplete="off">') +
+      fld("Повторите", '<input id="pin2" type="password" inputmode="numeric" minlength="4" maxlength="32" autocomplete="off">') +
+      '<div class="form-error" id="pinErr"></div>',
+      '<button class="btn ghost" data-x type="button">Отмена</button><button class="btn" data-ok type="button">Сохранить</button>');
+    $("[data-x]").onclick = closeSheet;
+    $("[data-ok]").onclick = async () => {
+      const a = $("#pin1").value, b = $("#pin2").value;
+      if (a.length < 4) { $("#pinErr").textContent = "Минимум 4 символа"; return; }
+      if (a !== b) { $("#pinErr").textContent = "PIN не совпадают"; return; }
+      saveState("saving");
+      try {
+        await DB.adapter.setPin(DB.team.id, kind, a);
+        await DB.log(isTeam ? "сменил PIN команды" : "сменил PIN капитана", null);
+        saveState("saved");
+        closeSheet();
+        render();
+        toast("PIN изменён", "ok");
+      } catch (e) { saveState(""); $("#pinErr").textContent = (e && e.message) || "Не сохранилось"; }
+    };
+  }
+
+  function sheetCloud() {
+    const cfg = DB.cloudConfig();
+    openSheet("Облако Supabase",
+      '<p class="muted tiny">Постоянное подключение — файл supabase-config.js в репозитории (см. SETUP.md). ' +
+      "Здесь можно ввести ключи временно, для проверки на этом устройстве.</p>" +
+      fld("Project URL", '<input id="clUrl" maxlength="120" value="' + esc((cfg && cfg.url) || "") + '" placeholder="https://xxxx.supabase.co">') +
+      fld("Anon key", '<input id="clKey" maxlength="500" value="' + esc((cfg && cfg.anonKey) || "") + '" placeholder="eyJ…">'),
+      '<button class="btn ghost" data-x type="button">Отмена</button>' +
+      (cfg ? '<button class="btn danger" data-clr type="button">Сбросить</button>' : "") +
+      '<button class="btn" data-ok type="button">Подключить</button>');
+    $("[data-x]").onclick = closeSheet;
+    const clr = $("[data-clr]");
+    if (clr) clr.onclick = () => { DB.clearCloudOverride(); location.reload(); };
+    $("[data-ok]").onclick = () => {
+      const url = $("#clUrl").value.trim(), anonKey = $("#clKey").value.trim();
+      if (!url || !anonKey) return;
+      DB.setCloudOverride({ url, anonKey });
+      location.reload();
+    };
+  }
+
+  /* ---------- export / import ---------- */
+  function exportTeam() {
+    const snap = { app: "cs2-team-playbook", v: 1, exportedAt: new Date().toISOString(), team: DB.team, data: {} };
+    DB.TABLES.forEach((t) => { snap.data[t] = DB.cache[t]; });
+    const blob = new Blob([JSON.stringify(snap)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "playbook-" + DB.team.name.replace(/[^\wа-яё-]+/gi, "-").toLowerCase() + ".json";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 3000);
+    toast("Копия скачана", "ok");
+  }
+  function importTeam(file) {
+    const reader = new FileReader();
+    reader.onload = async () => {
+      try {
+        const snap = JSON.parse(reader.result);
+        if (!snap || snap.app !== "cs2-team-playbook" || !snap.data) throw new Error("bad");
+        openModal("Заменить данные команды?", "Текущий плейбук будет перезаписан из файла.", [
+          { id: "no", label: "Отмена" },
+          { id: "yes", label: "Заменить", danger: true, onClick: async () => {
+            saveState("saving");
+            try {
+              for (const table of ["players", "maps", "tactics", "materials", "templates"]) {
+                const rows = DB.cache[table].slice();
+                for (const r of rows) await DB.adapter.del(table, DB.team.id, r.id);
+                for (const r of (snap.data[table] || []).slice().sort((a, b) => (a.pos || 0) - (b.pos || 0))) {
+                  const copy = clone(r);
+                  delete copy.id;
+                  await DB.adapter.save(table, DB.team.id, copy);
+                }
+              }
+              await DB.adapter.log(DB.team.id, DB.actorName(), "загрузил плейбук из файла", null);
+              await DB.refresh("*");
+              saveState("saved");
+              render();
+              toast("Плейбук загружен", "ok");
+            } catch (e) { saveState(""); toast((e && e.message) || "Не загрузилось", "warn"); }
+          } },
+        ]);
+      } catch (e) { toast("Файл не похож на выгрузку плейбука", "warn"); }
+    };
+    reader.readAsText(file);
+  }
+
+  /* ---------- realtime + boot ---------- */
+  function onDbEvent(evt) {
+    if (!evt) return;
+    if (evt.type === "status") {
+      paintNet();
+      if (evt.cloudError) toast("Облако недоступно, включён локальный режим", "warn");
+      else if (DB.mode() === "cloud") toast(DB.online ? "Соединение восстановлено" : "Нет соединения", DB.online ? "ok" : "warn");
+      return;
+    }
+    if (evt.type === "team") { render(false); return; }
+    if (evt.type === "favs") { render(); return; }
+    if (evt.type === "data") {
+      DB.refresh(evt.table === "*" ? "*" : evt.table).then(() => {
+        if (!DB.team) return;
+        if (sheetOpen() || modalOpen() || menuOpen()) {
+          S.dirtyRemote = true;
+          if (evt.origin === "remote") toast("Обновлено");
+          return;
+        }
+        const y = window.scrollY;
+        render();
+        window.scrollTo(0, y);
+        if (evt.origin === "remote") toast("Обновлено");
+      });
+      return;
+    }
   }
 
   function boot() {
-    const editButton = $("#editBtn");
-    const bombButton = $("#bombBtn");
-    const bombToggle = $("#bombToggle");
-    const bombHide = $("#bombHide");
-
-    if (editButton) {
-      editButton.onclick = () => {
-        if (isLocked()) return;
-        if (editMode) {
-          setEdit(false);
-          toast("Режим капитана закрыт");
-        } else {
-          openCaptainGate();
-        }
-      };
-    }
-    if (bombButton) {
-      bombButton.onclick = () => {
-        if (isLocked()) return;
-        if (bomb.state === "idle" || bomb.state === "done") startBomb();
-        else {
-          bomb.hidden = !$("#bombBar").hidden;
-          $("#bombBar").hidden = bomb.hidden;
-        }
-        syncStickyTop();
-      };
-    }
-    if (bombToggle) {
-      bombToggle.onclick = () => {
-        if (bomb.state === "done") startBomb();
-        else toggleBomb();
-      };
-    }
-    if (bombHide) {
-      bombHide.onclick = () => {
-        // «Скрыть»: панель прячется, при простое таймер сбрасывается.
-        if (bomb.state === "done" || bomb.state === "idle") stopBomb(true);
-        else $("#bombBar").hidden = true;
-        paintBombButton();
-        syncStickyTop();
-      };
-    }
-
+    $("#searchBtn").onclick = () => { if (DB.team) openSearch(); };
     window.addEventListener("hashchange", route);
-    window.addEventListener("resize", syncStickyTop);
-    // Старые версии сайта использовали агрессивный offline-кэш. Удаляем его,
-    // чтобы HTML, скрипты и изображения всегда загружались одной версии.
-    if ("serviceWorker" in navigator && navigator.serviceWorker.getRegistrations) {
-      navigator.serviceWorker.getRegistrations().then((registrations) => {
-        registrations.forEach((registration) => registration.unregister());
-      }).catch(() => {});
-    }
-    if (window.caches && caches.keys) {
-      caches.keys().then((keys) => {
-        keys.filter((key) => key.indexOf("cs2-playbook-") === 0).forEach((key) => caches.delete(key));
-      }).catch(() => {});
-    }
-    paintBomb();
-    route();
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") { closeMenus(); if (modalOpen()) closeModal(); else if (sheetOpen()) closeSheet(); else closeViewer(); }
+    });
+    DB.on(onDbEvent);
+    DB.init().then(() => {
+      S.bootDone = true;
+      route();
+    }).catch(() => {
+      $("#view").innerHTML = '<div class="empty">Не получилось запуститься. Обновите страницу.</div>';
+    });
+    // Чистим кэш старых версий.
+    try {
+      if (window.caches && caches.keys) {
+        caches.keys().then((keys) => keys.forEach((k) => { if (k.indexOf("cs2-playbook-") === 0) caches.delete(k); }));
+      }
+      if (navigator.serviceWorker && navigator.serviceWorker.getRegistrations) {
+        navigator.serviceWorker.getRegistrations().then((rs) => rs.forEach((r) => r.unregister()));
+      }
+    } catch (e) {}
   }
+
+  // После закрытия шторки подтягиваем изменения, прилетевшие по realtime.
+  const _closeSheet = closeSheet;
+  closeSheet = function () {
+    _closeSheet();
+    if (S.dirtyRemote && DB.team && !modalOpen() && !menuOpen()) {
+      S.dirtyRemote = false;
+      render();
+    }
+  };
 
   document.addEventListener("DOMContentLoaded", boot);
 })();

@@ -3,53 +3,49 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#0c0f13">
-  <title>CS2 Плейбук команды</title>
+  <meta name="theme-color" content="#0e1116">
+  <title>CS2 Team Playbook</title>
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="assets/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="assets/icon.svg">
-  <link rel="preload" as="image" href="assets/maps/mirage.png?v=7">
-  <link rel="preload" as="image" href="assets/maps/ancient.png?v=7">
-  <link rel="preload" as="image" href="assets/maps/dust2.png?v=7">
-  <link rel="stylesheet" href="styles.css?v=7">
+  <link rel="stylesheet" href="styles.css?v=8">
 </head>
 <body>
-  <header class="top" id="topbar">
-    <a class="logo" href="#/" aria-label="На главную">
-      <span class="logo-mark">CS2</span>
-      <span class="logo-name" id="teamTitle">Плейбук команды</span>
-    </a>
-    <div class="top-actions" id="topActions" hidden>
-      <button id="bombBtn" class="bomb-btn" type="button" title="Запустить таймер бомбы">Бомба 40</button>
-      <button id="editBtn" class="captain-btn" type="button">Капитан</button>
+  <header class="top" id="topbar" hidden>
+    <div class="brand">
+      <span class="brand-mark">CS2</span>
+      <span class="brand-team" id="brandTeam">—</span>
+      <span class="brand-sub">PLAYBOOK</span>
     </div>
-    <div class="bombbar" id="bombBar" hidden>
-      <span class="bomb-time" id="bombTime">00:40</span>
-      <button class="bomb-ctl" id="bombToggle" type="button">Стоп</button>
-      <button class="bomb-ctl ghost" id="bombHide" type="button">Скрыть</button>
+    <div class="top-status">
+      <span class="netdot" id="netDot" title="Соединение"></span>
+      <span class="savestate" id="saveState" hidden></span>
+      <button class="iconbtn" id="searchBtn" type="button" title="Поиск">⌕</button>
+      <span class="rolebadge" id="roleBadge">Игрок</span>
     </div>
   </header>
 
-  <aside id="editPanel" class="editpanel" hidden>
-    <div class="editpanel-inner" id="editPanelInner"></div>
-  </aside>
+  <div class="layout">
+    <aside class="side" id="sidebar" hidden>
+      <nav class="sidenav" id="sideNav"></nav>
+      <div class="side-foot" id="sideFoot"></div>
+    </aside>
+    <main class="view" id="view">
+      <div class="loading"><span class="loading-dot"></span>Загрузка…</div>
+    </main>
+  </div>
 
-  <main id="view"><div class="startup"><span class="startup-dot"></span>Загрузка плейбука…</div></main>
+  <nav class="bottomnav" id="bottomNav" hidden></nav>
 
-  <nav class="bottomnav" id="bottomNav" hidden>
-    <a class="bnav-btn" href="#/me" data-nav="me">Мои задачи</a>
-    <a class="bnav-btn" href="#/maps" data-nav="maps">Карты</a>
-    <a class="bnav-btn" href="#/team" data-nav="team">Команда</a>
-  </nav>
+  <div class="sheet-root" id="sheetRoot" hidden></div>
+  <div class="modal-root" id="modalRoot" hidden></div>
+  <div class="viewer-root" id="viewerRoot" hidden></div>
+  <div class="toast-root" id="toastRoot"></div>
 
-  <footer class="foot">
-    <span id="footTeam">CS2 Плейбук команды</span>
-    <span>Данные хранятся на этом устройстве</span>
-  </footer>
-
-  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
-
-  <script src="data.js?v=7"></script>
-  <script src="app.js?v=7"></script>
+  <script src="supabase-config.js"></script>
+  <script src="data.js?v=8"></script>
+  <script src="db.js?v=8"></script>
+  <script src="seed.js?v=8"></script>
+  <script src="app.js?v=8"></script>
 </body>
 </html>
