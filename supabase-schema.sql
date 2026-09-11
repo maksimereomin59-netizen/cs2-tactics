@@ -151,8 +151,10 @@ do $$ begin
 end $$;
 
 -- Keep activity feed capped (last 60 per team).
+-- security definer: иначе DELETE выполняется от имени игрока, RLS его не пропускает
+-- (политики на delete в activity нет) и журнал растёт бесконечно.
 create or replace function public.trim_activity()
-returns trigger language plpgsql as
+returns trigger language plpgsql security definer set search_path = public as
 $$ begin
   delete from activity a where a.team_id = new.team_id and a.id not in (
     select id from activity where team_id = new.team_id order by ts desc limit 60
