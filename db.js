@@ -452,7 +452,14 @@
       }
       return cfg;
     },
-    keyRole(key) { return jwtRole(key); },
+    keyRole(key) {
+      const k = String(key || "");
+      // Новый формат ключей Supabase: sb_publishable_… (в браузер можно) и sb_secret_… (нельзя).
+      if (k.indexOf("sb_secret_") === 0) return "service_role";
+      if (k.indexOf("sb_publishable_") === 0) return "publishable";
+      // Старый формат: JWT с ролью anon / service_role.
+      return jwtRole(k);
+    },
     setCloudOverride(cfg) { writeJSON(LS_CFG, cfg); },
     clearCloudOverride() { if (HAS_LS) { try { localStorage.removeItem(LS_CFG); } catch (e) {} } },
 
@@ -648,11 +655,15 @@
         return out;
       }
       if (cfg.unsafe) {
-        add("Ключи проекта", false, "вставлен service_role key — это секрет",
-          "Нужен anon public key: Supabase → Settings → API → Project API keys → anon public. Service_role обходит RLS и открыл бы данные команды всем посетителям сайта.");
+        add("Ключи проекта", false, "вставлен секретный ключ (sb_secret_… или service_role) — его нельзя публиковать",
+          "Нужен публичный ключ для браузера: publishable (sb_publishable_…) или legacy anon public (eyJ…). Взять здесь: Supabase → кнопка Connect или Settings → API Keys. Секретный ключ обходит RLS и открыл бы данные команды всем посетителям сайта.");
         return out;
       }
       add("Ключи проекта", true, cfg.url);
+      if (!/^https:\/\/[a-z0-9-]+\.supabase\.(co|in)\b/i.test(cfg.url) || /supabase\.com\/dashboard/i.test(cfg.url)) {
+        add("Адрес проекта", false, "похоже, вставлен не Project URL",
+          "Нужен адрес вида https://ваш-проект.supabase.co — его показывает кнопка Connect в проекте или Settings → API Keys. Адрес страницы дашборда (supabase.com/dashboard/…) не подойдёт.");
+      }
       if (!HAS_WINDOW || !window.supabase) {
         add("Библиотека supabase-js", false, "не загрузилась с CDN", "Проверьте интернет и блокировщики, затем перезагрузите страницу.");
         return out;

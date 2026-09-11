@@ -287,13 +287,38 @@ async function main() {
     return D.keyRole(jwt("anon")) === "anon" && D.cloudConfig().unsafe === undefined;
   })());
 
+  /* Новый формат ключей Supabase (sb_publishable_… / sb_secret_…) */
+  const { DB: DBpub } = installEnv({ url: "https://demo3.supabase.co", anonKey: "sb_publishable_abc123" });
+  check("config: новый publishable-ключ принимается", DBpub.cloudConfig().unsafe === undefined);
+  await DBpub.init();
+  check("config: с publishable-ключом облако включается", DBpub.mode() === "cloud");
+
+  const { be: beSalt, client: clientSalt, DB: DBsalt } = installEnv({ url: "https://demo5.supabase.co", anonKey: "sb_secret_xyz789" });
+  check("config: новый секретный sb_secret_ распознан как service_role", DBsalt.cloudConfig().unsafe === true);
+  await DBsalt.init();
+  check("config: с sb_secret_ облако НЕ включается", DBsalt.mode() === "local" && clientSalt._anon === false);
+  check("config: sb_secret_ не уходит в запросы", beSalt.calls.length === 0);
+  const diagSec = await DBsalt.diagnose();
+  check("config: про sb_secret_ есть понятная подсказка",
+    diagSec[0].ok === false && /service_role/.test(diagSec[0].detail) && /publishable/i.test(diagSec[0].fix),
+    diagSec[0].detail);
+
+  /* Адрес проекта: адрес дашборда вместо https://проект.supabase.co */
+  const { DB: DBbadUrl } = installEnv({ url: "https://supabase.com/dashboard/project/abc", anonKey: "sb_publishable_abc" });
+  await DBbadUrl.init();
+  const diagUrl = await DBbadUrl.diagnose();
+  const urlRow = diagUrl.find((r) => r.name === "Адрес проекта");
+  check("diagnose: адрес дашборда вместо Project URL распознан",
+    urlRow && urlRow.ok === false && /supabase\.co/.test(urlRow.fix), urlRow ? urlRow.detail : "нет пункта");
+
   const { be: be4, client: client4, DB: DB4 } = installEnv({ url: "https://demo4.supabase.co", anonKey: jwt("service_role") });
   check("config: service_role key помечен как небезопасный", DB4.cloudConfig().unsafe === true);
   await DB4.init();
   check("service_role: приложение НЕ подключается к базе", DB4.mode() === "local" && client4._anon === false);
   const diag5 = await DB4.diagnose();
   check("service_role: диагностика объясняет, какой ключ нужен",
-    diag5[0].ok === false && /service_role/.test(diag5[0].detail) && /anon public key/.test(diag5[0].fix),
+    diag5[0].ok === false && /service_role/.test(diag5[0].detail) &&
+    /publishable/i.test(diag5[0].fix) && /anon public/i.test(diag5[0].fix),
     diag5[0].detail);
   check("service_role: ключ не попадает в запросы", be4.calls.length === 0);
 
