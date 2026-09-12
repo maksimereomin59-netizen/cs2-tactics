@@ -49,8 +49,12 @@ function makeClient(be) {
         return { data: null, error: { message: 'relation "public.' + table + '" does not exist' } };
       }
       if (st.op === "insert") {
-        // Поведение Postgres: pos по умолчанию 0, если не задан; id из базы.
-        const row = { id: table.slice(0, 3) + "-" + be.nextId++, pos: 0, ...st.payload };
+        // Поведение Postgres: pos по умолчанию 0, ts — текущее время; id из базы.
+        be.clock = (be.clock || 0) + 1;
+        const row = {
+          id: table.slice(0, 3) + "-" + be.nextId++, pos: 0,
+          ts: Date.now() + be.clock, ...st.payload,
+        };
         rows.push(row);
         return { data: row, error: null };
       }
@@ -65,8 +69,17 @@ function makeClient(be) {
         return { data: null, error: null };
       }
       let out = rows.filter((r) => Object.entries(st.filters).every(([k, v]) => r[k] === v));
-      if (st.orderCol) out = out.slice().sort((a, b) => (a[st.orderCol] || 0) - (b[st.orderCol] || 0) * (st.asc ? 1 : 1));
-      if (st.orderCol === "pos" && !st.asc) out.reverse();
+      if (st.orderCol) {
+        // PostgREST: order(col, { ascending: false }) отдаёт строки от новых к старым.
+        const dir = st.asc ? 1 : -1;
+        out = out.slice().sort((a, b) => {
+          const av = a[st.orderCol], bv = b[st.orderCol];
+          if (av === bv) return 0;
+          if (av == null) return 1;
+          if (bv == null) return -1;
+          return (av > bv ? 1 : -1) * dir;
+        });
+      }
       if (st.limitN) out = out.slice(0, st.limitN);
       return { data: out, error: null };
     }
@@ -198,6 +211,84 @@ async function main() {
   check("realtime: событие от сервера доехало до UI", !!remoteEvent && remoteEvent.table === "tactics");
   check("realtime: капитанская правка уже в кэше игрока",
     !!DB.cache.tactics.find((t) => t.name === "Правка капитана"));
+
+  /* 8.5 Чат: отправка, порядок, лимит, удаление, права (главный фикс) */
+  {
+    const before = be.rows.messages.length;
+    await DB.sendMessage("Первое сообщение капитана");
+    const call = be.calls.filter((c) => c.table === "messages" && c.op !== "select").pop();
+    check("chat: сообщение уходит INSERT'ом, а не update несуществующей строки",
+      call && call.op === "insert" && be.rows.messages.length === before + 1,
+      call ? "op=" + call.op : "запроса нет");
+
+    // Старый путь UI: DB.save("messages", { id, … }) — раньше уходил в update и падал.
+    const legacy = await DB.save("messages", { id: "ms-legacy", author: "Макс", text: "старый путь" });
+    const legacyCall = be.calls.filter((c) => c.table === "messages" && c.op !== "select").pop();
+    check("chat: save('messages') больше не пытается обновить чужую строку",
+      legacyCall.op === "insert" && !!legacy.text, "op=" + legacyCall.op);
+    check("chat: старый путь не падает с TypeError (регрессия бага облачного чата)",
+      be.rows.messages.some((m) => m.text === "старый путь"));
+
+    let emptyErr = null;
+    try { await DB.sendMessage("    "); } catch (e) { emptyErr = e.message; }
+    check("chat: пустое сообщение не уходит в базу",
+      emptyErr === "Пустое сообщение" && !be.rows.messages.some((m) => /^\s*$/.test(m.text)), String(emptyErr));
+
+    let longErr = null;
+    try { await DB.sendMessage("а".repeat(501)); } catch (e) { longErr = e.message; }
+    check("chat: сообщение длиннее 500 знаков отклоняется",
+      longErr === "Сообщение длиннее 500 знаков", String(longErr));
+
+    // Лимит: берутся самые свежие 400, а не первые 400 по времени.
+    const t0 = Date.now();
+    for (let i = 0; i < 405; i++) {
+      be.rows.messages.push({ id: "ms-bulk-" + i, team_id: DB.team.id, author: "Макс", kind: "msg", text: "msg " + i, ts: t0 + i });
+    }
+    await DB.refresh("messages");
+    const cached = DB.cache.messages;
+    check("chat: при переполнении остаются ПОСЛЕДНИЕ сообщения, а не первые",
+      cached.length === 400 && cached[cached.length - 1].text === "msg 404" && cached[0].text === "msg 5",
+      `длина=${cached.length}, первое=${cached[0] && cached[0].text}, последнее=${cached[cached.length - 1] && cached[cached.length - 1].text}`);
+
+    // Удаление и права
+    const mine = be.rows.messages.find((m) => m.text === "Первое сообщение капитана");
+    check("chat: капитан может удалить любое сообщение", DB.canDeleteMessage({ author: "Кто-то другой" }) === true);
+    await DB.deleteMessage(mine.id);
+    check("chat: удалённое сообщение действительно исчезло из базы",
+      !be.rows.messages.some((m) => m.id === mine.id) && !DB.cache.messages.some((m) => m.id === mine.id));
+
+    // Realtime чата
+    const msgChannel = be.channels.find((c) => c.name.includes(":messages"));
+    check("chat: realtime-канал сообщений подписан и отфильтрован по команде",
+      !!msgChannel && msgChannel.subscribed && msgChannel.handlers[0].filter.filter === "team_id=eq." + DB.team.id);
+    be.rows.messages.push({ id: "ms-remote", team_id: DB.team.id, author: "Игрок 3", kind: "msg", text: "из другого окна", ts: Date.now() + 9e5 });
+    await msgChannel.handlers[0].cb({ eventType: "INSERT" });
+    await new Promise((r) => setTimeout(r, 20));
+    check("chat: чужое сообщение доехало до кэша по realtime",
+      DB.cache.messages.some((m) => m.id === "ms-remote"));
+
+    // Ошибка облака при отправке приходит понятным текстом
+    const okClient = DB.adapter.client;
+    const badClient = makeClient(be);
+    badClient.from = (t) => {
+      const b = { select: () => b, eq: () => b, order: () => b, limit: () => b, insert: () => b, update: () => b,
+        single: async () => ({ data: null, error: { message: 'new row violates row-level security policy for table "messages"' } }),
+        then: (res) => res({ data: null, error: { message: "boom" } }) };
+      return b;
+    };
+    DB.adapter.client = badClient;
+    const logged = [];
+    const origErr = console.error;
+    console.error = (...a) => logged.push(a.join(" "));
+    let sendErr = null;
+    try { await DB.sendMessage("не уйдёт"); } catch (e) { sendErr = e.message; }
+    console.error = origErr;
+    DB.adapter.client = okClient;
+    check("chat: сбой отправки показывается текстом, а не молча",
+      sendErr === "Не удалось отправить сообщение", String(sendErr));
+    check("chat: техническая причина сбоя уходит в консоль, а не в интерфейс",
+      logged.some((l) => /row-level security/.test(l)), logged.join(" | ").slice(0, 80));
+  }
 
   /* 9. Офлайн: запись запрещена, чтение — из кэша */
   Object.defineProperty(globalThis, "navigator", { value: { onLine: false }, configurable: true, writable: true });

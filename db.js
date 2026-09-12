@@ -162,9 +162,14 @@
     const team = this.db.teams.find((t) => t.id === teamId);
     if (!team) throw err("NO_TEAM", "Команда не найдена");
     if (String(newPin).length < 4) throw err("BAD_INPUT", "Минимум 4 символа");
-    if (kind === "team") team.pinHash = await sha256hex(team.salt + "::" + newPin);
-    else if (kind === "captain") team.captainPinHash = await sha256hex(team.salt + "::cap::" + newPin);
-    else throw err("BAD_INPUT", "Неизвестный тип PIN");
+    /* Одинаковый PIN команды и капитана = любой игрок может повысить себя до капитана. */
+    if (kind === "team") {
+      if (await sha256hex(team.salt + "::cap::" + newPin) === team.captainPinHash) throw err("SAME_PIN", "Такой PIN уже используется");
+      team.pinHash = await sha256hex(team.salt + "::" + newPin);
+    } else if (kind === "captain") {
+      if (await sha256hex(team.salt + "::" + newPin) === team.pinHash) throw err("SAME_PIN", "Такой PIN уже используется");
+      team.captainPinHash = await sha256hex(team.salt + "::cap::" + newPin);
+    } else throw err("BAD_INPUT", "Неизвестный тип PIN");
     this.persist();
     this.emit({ type: "data", table: "*", origin: "local" });
   };
@@ -199,6 +204,7 @@
     return clone((this.bucket(teamId)[table] || []).find((r) => r.id === id) || null);
   };
   LocalAdapter.prototype.save = async function (table, teamId, obj) {
+    if (table === "messages") return this.sendMessage(teamId, obj);
     const rows = this.bucket(teamId)[table];
     const now = Date.now();
     let row = obj.id ? rows.find((r) => r.id === obj.id) : null;
@@ -213,6 +219,20 @@
     row.updated_at = now;
     this.persist();
     this.emit({ type: "data", table, origin: "local", id: row.id });
+    return clone(row);
+  };
+  /* Чат — append-only: сообщение всегда создаётся, никогда не «обновляется».
+     Отдельный метод нужен, чтобы локальный и облачный адаптер вели себя одинаково. */
+  LocalAdapter.prototype.sendMessage = async function (teamId, msg) {
+    const rows = this.bucket(teamId).messages;
+    const row = {
+      id: msg.id || uid("ms"), team_id: teamId,
+      author: msg.author || "", kind: msg.kind === "notice" ? "notice" : "msg",
+      text: String(msg.text || ""), ts: msg.ts || Date.now(),
+    };
+    rows.push(row);
+    this.persist();
+    this.emit({ type: "data", table: "messages", origin: "local", id: row.id });
     return clone(row);
   };
   LocalAdapter.prototype.del = async function (table, teamId, id, silent) {
@@ -292,7 +312,10 @@
     if (msg.indexOf("BAD_PIN") >= 0) throw err("BAD_PIN", "Неверный PIN");
     if (msg.indexOf("NAME_TAKEN") >= 0) throw err("NAME_TAKEN", "Такое название уже занято");
     if (msg.indexOf("BAD_INPUT") >= 0) throw err("BAD_INPUT", "Проверьте введённые данные");
+    if (msg.indexOf("SAME_PIN") >= 0) throw err("SAME_PIN", "Такой PIN уже используется для другого входа — придумайте другой");
     if (msg.indexOf("DENIED") >= 0 || msg.indexOf("NOT_MEMBER") >= 0) throw err("DENIED", "Нет прав");
+    // Техническая причина — в консоль, пользователю — понятный русский текст.
+    try { console.error("[playbook] cloud error:", msg); } catch (ignore) {}
     throw err("CLOUD", fallback || ("Ошибка облака: " + msg));
   }
   SupabaseAdapter.prototype.createTeam = async function (input) {
@@ -357,11 +380,15 @@
   };
   SupabaseAdapter.prototype.list = async function (table, teamId) {
     const orderCol = (table === "activity" || table === "messages") ? "ts" : (table === "templates" ? "created_at" : "pos");
+    // Для чата и журнала берём самые СВЕЖИЕ строки (desc + limit), а отдаём по возрастанию:
+    // при ascending+limit в активном чате терялись бы последние сообщения.
+    const desc = table === "activity" || table === "messages";
     const { data, error } = await this.client.from(table).select("*").eq("team_id", teamId)
-      .order(orderCol, { ascending: table === "activity" ? false : true })
+      .order(orderCol, { ascending: !desc })
       .limit(table === "activity" ? 60 : table === "messages" ? 400 : 1000);
     if (error) rpcErr(error);
-    return data || [];
+    const rows = data || [];
+    return desc ? rows.reverse() : rows;
   };
   SupabaseAdapter.prototype.get = async function (table, teamId, id) {
     const { data, error } = await this.client.from(table).select("*").eq("team_id", teamId).eq("id", id).single();
@@ -373,6 +400,8 @@
     return (((data && data[0]) || {}).pos || 0) + 1;
   };
   SupabaseAdapter.prototype.save = async function (table, teamId, obj) {
+    // Чат — append-only таблица: её строки создаются, а не обновляются.
+    if (table === "messages") return this.sendMessage(teamId, obj);
     const row = clone(obj);
     delete row.id;
     row.team_id = teamId;
@@ -386,6 +415,19 @@
     if (res.error) rpcErr(res.error);
     this.emit({ type: "data", table, origin: "local", id: res.data.id });
     return res.data;
+  };
+  /* Чат в облаке: только INSERT. Раньше сообщение с клиентским id уходило в
+     update несуществующей строки и PostgREST отвечал ошибкой — чат не работал. */
+  SupabaseAdapter.prototype.sendMessage = async function (teamId, msg) {
+    const row = {
+      id: msg.id || uid("ms"), team_id: teamId,
+      author: msg.author || "", kind: msg.kind === "notice" ? "notice" : "msg",
+      text: String(msg.text || ""), ts: msg.ts || Date.now(),
+    };
+    const { data, error } = await this.client.from("messages").insert(row).select().single();
+    if (error) rpcErr(error, "Не удалось отправить сообщение");
+    this.emit({ type: "data", table: "messages", origin: "local", id: row.id });
+    return data || row;
   };
   SupabaseAdapter.prototype.del = async function (table, teamId, id, silent) {
     const { error } = await this.client.from(table).delete().eq("id", id).eq("team_id", teamId);
@@ -596,6 +638,7 @@
 
     async save(table, obj) {
       if (this.mode() === "cloud" && !this.online) throw err("OFFLINE", "Нет соединения");
+      if (table === "messages") return this.sendMessage(obj && obj.text, obj && obj.kind);
       const row = await this.adapter.save(table, this.team.id, obj);
       await this.refresh(table);
       return row;
@@ -610,18 +653,8 @@
       await this.adapter.reorder(table, this.team.id, ids);
       await this.refresh(table);
     },
-    /** Массовая очистка таблиц (капитанский сброс содержимого): удаляем без штормa событий. */
-    async purge(tables) {
-      if (!this.team) return;
-      for (const t of tables) {
-        const rows = (this.cache[t] || []).slice();
-        for (const r of rows) {
-          try { await this.adapter.del(t, this.team.id, r.id, true); } catch (e) {}
-        }
-      }
-      await this.refresh("*");
-      this.emit({ type: "data", table: "*", origin: "local" });
-    },
+    /** Массовая очистка таблиц больше не используется: сущности удаляются по одной
+        там же, где ими управляют (тактики, игроки, видео, сообщения). */
     async log(text, ref) {
       try { await this.adapter.log(this.team.id, this.actorName(), text, ref); } catch (e) {}
       await this.refresh("activity");
@@ -635,6 +668,45 @@
       }
       return this.isCaptain() ? ((this.team && this.team.captainName) || "Капитан") : "Игрок";
     },
+
+    /* --- чат команды ---
+       Пишут все участники, удаляет автор или капитан. Ошибки возвращаются
+       кодами (EMPTY / OFFLINE / DENIED / CLOUD) — текст для пользователя
+       формирует интерфейс, технические детали остаются в логе. */
+    async sendMessage(text, kind) {
+      if (!this.team) throw err("NO_TEAM", "Команда не выбрана");
+      const clean = String(text == null ? "" : text).replace(/\s+/g, " ").trim();
+      if (!clean) throw err("EMPTY", "Пустое сообщение");
+      if (clean.length > 500) throw err("TOO_LONG", "Сообщение длиннее 500 знаков");
+      if (this.mode() === "cloud" && !this.online) throw err("OFFLINE", "Нет соединения");
+      const row = await this.adapter.sendMessage(this.team.id, {
+        id: uid("ms"), author: this.actorName(),
+        kind: (kind === "notice" && this.isCaptain()) ? "notice" : "msg",
+        text: clean, ts: Date.now(),
+      });
+      await this.refresh("messages");
+      return row;
+    },
+    async deleteMessage(id) {
+      if (!this.team) throw err("NO_TEAM", "Команда не выбрана");
+      if (this.mode() === "cloud" && !this.online) throw err("OFFLINE", "Нет соединения");
+      await this.adapter.del("messages", this.team.id, id);
+      await this.refresh("messages");
+    },
+    canDeleteMessage(m) {
+      if (!m) return false;
+      return this.isCaptain() || m.author === this.actorName();
+    },
+
+    /* --- настройки команды (роли, термины, права игроков) --- */
+    async setTeamSettings(patch) {
+      if (!this.team) throw err("NO_TEAM", "Команда не выбрана");
+      this.team = await this.adapter.updateTeam(this.team.id, { settings: patch });
+      this.persistSession();
+      this.emit({ type: "team" });
+      return this.team;
+    },
+    settings() { return (this.team && this.team.settings) || {}; },
 
     /* --- device-local: мой профиль и избранное --- */
     prefs() { return readJSON(LS_PREF, { myPlayer: {}, favs: {} }); },
