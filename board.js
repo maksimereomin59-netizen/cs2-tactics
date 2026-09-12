@@ -150,9 +150,9 @@
         '<div class="tb-main">' +
           '<div class="tb-actions" data-role="actions"></div>' +
           '<div class="tb-stage" data-role="stage">' +
-            '<svg class="tb-svg" viewBox="0 0 100 100" preserveAspectRatio="xMidYMid meet" data-role="svg">' +
+            '<svg class="tb-svg" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 100 100" preserveAspectRatio="xMidYMid meet" data-role="svg">' +
               '<g class="tb-vp" data-role="vp">' +
-                (opts.bg ? '<image class="tb-map" href="' + esc(opts.bg) + '" x="0" y="0" width="100" height="100" preserveAspectRatio="none"/>' : "") +
+                (opts.bg ? '<image class="tb-map" href="' + esc(opts.bg) + '" xlink:href="' + esc(opts.bg) + '" x="0" y="0" width="100" height="100" preserveAspectRatio="none"/>' : "") +
                 '<rect class="tb-nobg" x="0" y="0" width="100" height="100"' + (opts.bg ? ' fill="transparent"' : "") + "/>" +
                 '<g class="tb-grid" data-role="grid" hidden></g>' +
                 '<g class="tb-shapes" data-role="shapes"></g>' +
@@ -178,6 +178,25 @@
       api.marksG = $('[data-role="marks"]', root);
       api.uiG = $('[data-role="ui"]', root);
       api.previewG = $('[data-role="preview"]', root);
+
+      /* Радар не загрузился (битая ссылка, протухший signed URL) — пробуем
+         запасные фоны по цепи, а в конце честно говорим, что схема без подложки,
+         вместо «чёрного экрана». */
+      (function bindBgFallback() {
+        const img = $(".tb-map", root);
+        if (!img) return;
+        img.addEventListener("error", function onErr() {
+          const next = (opts.bgFallbacks || []).shift();
+          if (!next) {
+            img.removeEventListener("error", onErr);
+            img.remove();
+            hint("Радар карты не загрузился — схема рисуется без подложки. Капитан может сменить фон в «Изменить карту».");
+            return;
+          }
+          img.setAttribute("href", next);
+          try { img.setAttribute("xlink:href", next); } catch (e) {}
+        });
+      })();
 
       buildGrid();
       renderTools();

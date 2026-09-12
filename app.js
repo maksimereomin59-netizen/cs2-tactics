@@ -112,6 +112,10 @@
     mirage: "assets/maps/cards/mirage.jpg",
     ancient: "assets/maps/cards/ancient.jpg",
     dust2: "assets/maps/cards/dust2.jpg",
+    inferno: "assets/maps/cards/inferno.svg",
+    nuke: "assets/maps/cards/nuke.svg",
+    overpass: "assets/maps/cards/overpass.svg",
+    anubis: "assets/maps/cards/anubis.svg",
   };
   const KABANY_HERO = "assets/kabany-hero.jpg";
   function mapSlug(name) {
@@ -119,10 +123,32 @@
     if (s.indexOf("mirage") >= 0) return "mirage";
     if (s.indexOf("ancient") >= 0) return "ancient";
     if (s.indexOf("dust") >= 0) return "dust2";
+    if (s.indexOf("inferno") >= 0) return "inferno";
+    if (s.indexOf("nuke") >= 0) return "nuke";
+    if (s.indexOf("overpass") >= 0) return "overpass";
+    if (s.indexOf("anubis") >= 0) return "anubis";
     return "";
   }
   const mapArt = (m) => (m && (m.photo || MAP_ART[mapSlug(m.name)] || KABANY_HERO)) || KABANY_HERO;
   const mapRadar = (m) => (m && m.image) || "";
+  /* Встроенные радары/схемы: если у карты команды фон побит или устарел,
+     доска автоматически откатится к встроенной подложке этой же карты. */
+  const BUILTIN_RADAR = {
+    mirage: "assets/maps/mirage.png", ancient: "assets/maps/ancient.png", dust2: "assets/maps/dust2.png",
+    inferno: "assets/maps/inferno.svg", nuke: "assets/maps/nuke.svg",
+    overpass: "assets/maps/overpass.svg", anubis: "assets/maps/anubis.svg",
+  };
+  function boardBgChain(t, block) {
+    const m = mapById(t.map_id);
+    const slug = m ? mapSlug(m.name) : "";
+    const chain = [];
+    if (block && block.bg) chain.push(block.bg);
+    if (m && m.image) chain.push(m.image);
+    if (slug && BUILTIN_RADAR[slug]) chain.push(BUILTIN_RADAR[slug]);
+    if (m && m.photo) chain.push(m.photo);
+    chain.push(KABANY_HERO);
+    return chain.filter((x, i) => x && chain.indexOf(x) === i);
+  }
 
   /* ---------- зоны карты (для «где я стою») ---------- */
   function baseMap(m) {
@@ -334,6 +360,7 @@
     if (!DB.team) {
       paintShell();
       if (p[0] === "create") viewCreate();
+      else if (p[0] === "join" && p[1]) viewJoin(p[1]);
       else viewLogin();
       window.scrollTo(0, 0);
       return;
@@ -404,6 +431,75 @@
       }
     };
     setTimeout(() => { const el = $("#liPin"); if (el && !lsGet(LS_LAST_TEAM)) $("#liName").focus(); else if (el) el.focus(); }, 60);
+  }
+
+  /** Ссылка-приглашение: teammate открывает её и вводит только PIN. */
+  function inviteLink(teamId) {
+    return location.href.split("#")[0] + "#/join/" + (teamId || (DB.team && DB.team.id) || "");
+  }
+  function copyText(text, okText) {
+    const done = () => toast(okText || "Скопировано", "ok");
+    const fallback = () => {
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+        document.body.appendChild(ta); ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+        done();
+      } catch (e) { toast("Скопируйте вручную: " + text, "warn"); }
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, fallback);
+    } else fallback();
+  }
+
+  /** Вход по пригласительной ссылке: название команды уже известно, нужен PIN. */
+  function viewJoin(teamId) {
+    view().innerHTML =
+      '<div class="auth"><div class="auth-mark"><span>' + ic("link") + "</span></div>" +
+      "<h1>Приглашение в команду</h1>" +
+      '<p class="auth-sub">Проверяем ссылку…</p></div>';
+    DB.teamInfo(teamId).then((team) => {
+      view().innerHTML =
+        '<div class="auth">' +
+        '<div class="auth-mark"><span>' + ic("link") + "</span></div>" +
+        "<h1>Вход в «" + esc(team.name) + "»</h1>" +
+        '<p class="auth-sub">Капитан: <b>' + esc(team.captainName || "—") + "</b>. " +
+        "Осталось ввести PIN команды — его выдаёт капитан.</p>" +
+        '<form id="joinForm" class="auth-form" novalidate>' +
+        field("PIN команды", '<input id="joinPin" type="password" inputmode="numeric" maxlength="32" autocomplete="current-password" placeholder="Код команды" required>') +
+        '<p class="form-error" id="joinErr" role="alert"></p>' +
+        '<button class="btn btn-primary btn-block" type="submit">Войти в команду</button>' +
+        "</form>" +
+        '<div class="auth-links"><a href="#/login">Другая команда</a></div>' +
+        "</div>";
+      setTimeout(() => { const el = $("#joinPin"); if (el) el.focus(); }, 60);
+      $("#joinForm").onsubmit = async (e) => {
+        e.preventDefault();
+        const errBox = $("#joinErr");
+        errBox.textContent = "";
+        const pin = $("#joinPin").value;
+        if (!pin) { errBox.textContent = "Введите PIN команды"; return; }
+        const btn = $('[type="submit"]', e.target);
+        btn.disabled = true; btn.classList.add("is-busy");
+        try {
+          await loginTeam(team.name, pin);
+          lsSet(LS_LAST_TEAM, team.name);
+          afterEnter();
+        } catch (err) {
+          errBox.textContent = UI.friendlyError(err, "Не удалось войти. Проверьте PIN.");
+        } finally {
+          btn.disabled = false; btn.classList.remove("is-busy");
+        }
+      };
+    }).catch((e) => {
+      view().innerHTML =
+        '<div class="auth"><div class="auth-mark"><span>' + ic("warn") + "</span></div>" +
+        "<h1>Ссылка не сработала</h1>" +
+        '<p class="auth-sub">' + esc(UI.friendlyError(e, "Команда по этой ссылке не найдена.")) + "</p>" +
+        '<div class="auth-links"><a href="#/login">Войти названием и PIN</a></div></div>';
+    });
   }
 
   /** Вход: пробуем как капитан (командный PIN + PIN капитана), иначе как игрок. */
@@ -510,15 +606,33 @@
 
   function viewCreated(pin) {
     paintShell();
+    const link = inviteLink();
     view().innerHTML =
       '<div class="auth">' +
       '<div class="auth-mark ok"><span>' + ic("check") + "</span></div>" +
       "<h1>Команда создана</h1>" +
       '<p class="auth-sub">Стартовый набор загружен: карты, состав, тактики и раскидки. Меняйте всё под свою команду.</p>' +
       '<div class="pinview"><small>Код команды для игроков</small><b>' + esc(pin) + "</b></div>" +
+      '<div class="invitebox">' +
+      '<div class="invite-head">' + ic("link") + "<b>Пригласительная ссылка</b></div>" +
+      '<p class="hint">Отправьте её сокомандникам: по ссылке откроется вход, где останется ввести PIN.</p>' +
+      '<div class="inviterow"><code id="invLink">' + esc(link) + "</code></div>" +
+      '<div class="btnrow"><button class="btn btn-ghost btn-sm" type="button" id="invCopy">' + ic("copy") + " Скопировать</button>" +
+      '<button class="btn btn-ghost btn-sm" type="button" id="invShare">' + ic("send") + " Поделиться</button></div>" +
+      "</div>" +
       '<button class="btn btn-primary btn-block" id="openPb" type="button">Открыть плейбук</button>' +
       "</div>";
     $("#openPb").onclick = () => afterEnter();
+    $("#invCopy").onclick = () => copyText(link, "Ссылка скопирована — отправьте её команде");
+    bindShare($("#invShare"), link);
+  }
+  function bindShare(btn, link) {
+    if (!btn) return;
+    if (navigator.share) {
+      btn.onclick = () => { navigator.share({ title: "CS2 Team Playbook", text: "Вступай в команду — введи PIN: ", url: link })["catch"](() => {}); };
+    } else {
+      btn.onclick = () => copyText(link, "Ссылка скопирована — отправьте её команде");
+    }
   }
 
   function openProfilePicker() {
@@ -550,7 +664,6 @@
     let h = '<header class="page-head with-art" style="--art:url(\'' + KABANY_HERO + '\')">' +
       "<div><h1>" + esc(DB.team.name) + "</h1>" +
       '<p class="sub">Капитан: <b>' + esc(cap) + "</b>" + (me ? " · вы: <b>" + esc(me.name) + "</b>" : "") + " · <span style='opacity:.85'>Реальные кабаны</span></p></div>" +
-      (isCap() ? '<div class="head-actions"><button class="btn btn-primary" type="button" data-newtactic>' + ic("plus") + " Тактика</button></div>" : "") +
       "</header>";
 
     /* 1. Что сделать сейчас */
@@ -575,12 +688,6 @@
         });
         h += "</ul>";
       }
-    }
-    if (isCap()) {
-      h += '<div class="quickrow">' +
-        '<button class="btn btn-ghost btn-sm" type="button" data-q="tactic">' + ic("plus") + " Тактика</button>" +
-        '<button class="btn btn-ghost btn-sm" type="button" data-q="player">' + ic("plus") + " Игрок</button>" +
-        "</div>";
     }
     h += "</div></section>";
 
@@ -613,17 +720,8 @@
       });
       h += "</div>";
       view().innerHTML = h;
-      const nt2 = $("[data-newtactic]");
-      if (nt2) nt2.onclick = () => sheetNewTactic(null);
       const pm2 = $("[data-pickme]");
       if (pm2) pm2.onclick = openProfilePicker;
-      $$("[data-q]").forEach((b) => {
-        b.onclick = () => {
-          const q = b.dataset.q;
-          if (q === "tactic") sheetNewTactic(null);
-          else if (q === "player") sheetPlayer(null);
-        };
-      });
       $$("[data-starter]").forEach((b) => { b.onclick = () => loadStarterKit(); });
       return;
     } else {
@@ -644,17 +742,8 @@
     h += "</div></section>";
 
     view().innerHTML = h;
-    const nt = $("[data-newtactic]");
-    if (nt) nt.onclick = () => sheetNewTactic(null);
     const pm = $("[data-pickme]");
     if (pm) pm.onclick = openProfilePicker;
-    $$("[data-q]").forEach((b) => {
-      b.onclick = () => {
-        const q = b.dataset.q;
-        if (q === "tactic") sheetNewTactic(null);
-        else if (q === "player") sheetPlayer(null);
-      };
-    });
     $$("[data-starter]").forEach((b) => { b.onclick = () => loadStarterKit(); });
   }
 
@@ -722,8 +811,9 @@
     h += '<section class="card"><div class="card-body tight">';
     if (!list.length) {
       h += emptyState("target", all.length ? "Ничего не найдено" : "Тактик на этой карте пока нет",
-        all.length ? "Измените фильтры или поисковый запрос." : (isCap() ? "Создайте первую тактику — откройте редактор и нарисуйте схему." : "Капитан ещё не добавил тактики."),
-        !all.length && isCap() ? '<button class="btn btn-primary btn-sm" type="button" data-newt>' + ic("plus") + " Создать тактику</button>" : "");
+        all.length ? "Измените фильтры или поисковый запрос." : (isCap() ? "Загрузите дефолтные схемы или создайте свою тактику." : "Капитан ещё не добавил тактики."),
+        !all.length && isCap() ? '<button class="btn btn-primary btn-sm" type="button" data-defmap>' + ic("refresh") + " Дефолтные схемы</button>" +
+          ' <button class="btn btn-ghost btn-sm" type="button" data-newt>' + ic("plus") + " Создать тактику</button>" : "");
     } else {
       h += '<div class="taclist">';
       list.forEach((t) => { h += tacticCardHTML(t, m); });
@@ -741,6 +831,8 @@
     view().innerHTML = h;
     const nt = $$("[data-newt]");
     nt.forEach((b) => { b.onclick = () => sheetNewTactic(m.id); });
+    const dm = $("[data-defmap]");
+    if (dm) dm.onclick = () => loadMapDefaults(m);
     const mm = $("[data-mapmenu]");
     if (mm) mm.onclick = (e) => { e.stopPropagation(); mapMenu(e.currentTarget, m); };
     $$("[data-f]").forEach((b) => {
@@ -869,9 +961,9 @@
     if (!t) return;
     openMenu(anchor, [
       { label: "Открыть", icon: "expand", onClick: () => go("#/tactic/" + t.id) },
-      { label: "Изменить", icon: "edit", onClick: () => sheetEditTactic(t) },
-      { label: "Переименовать", icon: "text", onClick: () => sheetEditTactic(t) },
+      { label: "Детали и переименование", icon: "edit", onClick: () => sheetEditTactic(t) },
       { label: "Копия тактики", icon: "copy", onClick: () => duplicateTactic(t.id) },
+      { label: "Загрузить дефолт схемы", icon: "refresh", onClick: () => restoreBoardDefault(t) },
       { sep: true },
       { label: "Удалить тактику", icon: "trash", danger: true, onClick: () => deleteTactic(t) },
     ]);
@@ -1001,19 +1093,25 @@
     if (!host) return;
     if (S.board) { S.board.destroy(); S.board = null; }
     if (!block) {
+      const hasDef = mapById(t.map_id) && Seed.mapKeyByName(mapById(t.map_id).name);
       host.innerHTML = '<div class="board-empty">' +
-        emptyState("map", "Схемы пока нет", isCap() ? "Создайте схему — откроется редактор поверх радара карты." : "Капитан ещё не добавил схему.",
-          isCap() ? '<button class="btn btn-primary btn-sm" type="button" data-addboard>' + ic("plus") + " Создать схему</button>" : "") +
+        emptyState("map", "Схемы пока нет", isCap() ? "Загрузите дефолтную расстановку или создайте схему с нуля." : "Капитан ещё не добавил схему.",
+          isCap() ? (hasDef ? '<button class="btn btn-primary btn-sm" type="button" data-defboard>' + ic("refresh") + " Дефолтная схема</button> " : "") +
+          '<button class="btn btn-ghost btn-sm" type="button" data-addboard>' + ic("plus") + " Пустая схема</button>" : "") +
         "</div>";
       const ab = $("[data-addboard]", host);
       if (ab) ab.onclick = () => addBoardBlock(t);
+      const dbtn = $("[data-defboard]", host);
+      if (dbtn) dbtn.onclick = () => restoreBoardDefault(t);
       return;
     }
+    const bgChain = boardBgChain(t, block);
     S.board = Board.create(host, {
       block,
       editable: isCap(),
       players: DB.cache.players,
-      bg: block.bg || mapRadar(mapById(t.map_id)) || mapArt(mapById(t.map_id)) || KABANY_HERO,
+      bg: bgChain[0] || "",
+      bgFallbacks: bgChain.slice(1),
       side: t.side,
       ic,
       glyphPath: (name) => UI.ICON[name] || "",
@@ -1827,6 +1925,10 @@
       ["assets/maps/mirage.png", "Mirage (встроенный радар)"],
       ["assets/maps/ancient.png", "Ancient (встроенный радар)"],
       ["assets/maps/dust2.png", "Dust 2 (встроенный радар)"],
+      ["assets/maps/inferno.svg", "Inferno (схема)"],
+      ["assets/maps/nuke.svg", "Nuke (схема)"],
+      ["assets/maps/overpass.svg", "Overpass (схема)"],
+      ["assets/maps/anubis.svg", "Anubis (схема)"],
     ]);
     openSheet(isNew ? "Новая карта" : "Изменить карту",
       field("Название", '<input id="mpName" maxlength="40" value="' + attr(m.name) + '" placeholder="Например: Mirage">') +
@@ -1891,9 +1993,7 @@
   }
   async function loadStarterKit() {
     if (!isCap()) { toast("Это может сделать только капитан", "warn"); return; }
-    const need = DB.cache.maps.length === 0 || DB.cache.tactics.length === 0;
-    if (!need) { toast("Стартовый набор уже загружен", "ok"); return; }
-    if (!confirm("Загрузить стартовый набор? Добавим карты Mirage, Ancient, Dust 2 с тактиками, составом и раскидками. Текущие данные не удалятся.")) return;
+    if (!confirm("Загрузить стартовый набор? Добавим карты с дефолтами, составами и раскидками. Уже существующие тактики не удаляются и не дублируются.")) return;
     saveState("saving");
     try {
       await Seed.seedTeam(DB.team.id);
@@ -1902,6 +2002,62 @@
       toast("Стартовый набор загружен", "ok");
       render();
     } catch (e) { saveState(""); toast(UI.friendlyError(e, "Не удалось загрузить набор"), "err"); }
+  }
+  /** Вернуть дефолтные тактики (и схемы) одной карты — идемпотентно. */
+  async function loadMapDefaults(m) {
+    if (!isCap()) { toast("Это может сделать только капитан", "warn"); return; }
+    if (!m) return;
+    const key = Seed.mapKeyByName(m.name);
+    if (!key) { toast("Для «" + m.name + "» нет встроенных дефолтов — схема рисуется вручную", "warn"); return; }
+    saveState("saving");
+    try {
+      const res = await Seed.seedMap(DB.team.id, key);
+      await DB.refresh("*");
+      saveState("saved");
+      toast(res.added ? "Дефолтные схемы " + m.name + " добавлены (" + res.added + ")" : "Дефолты " + m.name + " уже на месте", "ok");
+      render();
+    } catch (e) { saveState(""); toast(UI.friendlyError(e, "Не удалось загрузить дефолты"), "err"); }
+  }
+  /** Заменить схему тактики на дефолтную для её карты и стороны. */
+  async function restoreBoardDefault(t) {
+    if (!isCap()) { toast("Это может сделать только капитан", "warn"); return; }
+    const m = mapById(t.map_id);
+    const key = m && Seed.mapKeyByName(m.name);
+    if (!key) { toast("Для этой карты нет встроенной дефолтной схемы", "warn"); return; }
+    const side = t.side === "CT" ? "CT" : "T";
+    confirmDlg("Загрузить дефолт схемы?",
+      "Текущая схема «" + t.name + "» будет заменена дефолтной расстановкой " + side + " для " + m.name + ". Задачи и состав тоже обновятся.",
+      async () => {
+        const pmap = Seed.playerMap(DB.cache.players);
+        const board = Seed.boardFor(key, side, pmap);
+        if (!board) { toast("Дефолта для этой стороны нет", "warn"); return; }
+        const blocks = clone(blocksOf(t));
+        let b = blocks.find((x) => x.type === "board");
+        if (!b) { b = { id: uid("b"), type: "board", title: "Схема" }; blocks.push(b); }
+        b.markers = board.markers; b.drawings = board.drawings; b.markerStyle = board.markerStyle; b.view = null;
+        const BASE = window.TACTICS_BASE;
+        const sd = BASE.maps[key].sides[side];
+        // обновим состав и задачи, чтобы схема и текст сходились
+        const roster = blocks.find((x) => x.type === "roster");
+        if (roster) roster.items = (sd.defaults || []).map((d) => ({
+          id: uid("i"), playerId: pmap[d.player] || null, note: zoneNameOf(key, d.zone),
+        }));
+        const tasks = blocks.find((x) => x.type === "tasks");
+        if (tasks) tasks.items = (sd.defaults || []).map((d) => ({
+          id: uid("i"), playerId: pmap[d.player] || null, role: "", task: d.note || "", note: zoneDescOf(key, d.zone),
+        }));
+        const ok = await commit("вернул дефолтную схему в «" + t.name + "»", { kind: "tactic", id: t.id },
+          () => DB.save("tactics", { id: t.id, blocks }));
+        if (ok !== null) { toast("Дефолтная схема загружена", "ok"); S.boardTacticId = null; render(); }
+      }, "Загрузить");
+  }
+  function zoneNameOf(mapKey, zoneId) {
+    const z = ((window.TACTICS_BASE.maps[mapKey] || {}).zones || []).filter((x) => x.id === zoneId)[0];
+    return z ? z.name : "";
+  }
+  function zoneDescOf(mapKey, zoneId) {
+    const z = ((window.TACTICS_BASE.maps[mapKey] || {}).zones || []).filter((x) => x.id === zoneId)[0];
+    return z ? z.desc : "";
   }
   function deleteMap(m) {
     const n = DB.cache.tactics.filter((t) => t.map_id === m.id).length;
@@ -1916,8 +2072,9 @@
     if (!m) return;
     openMenu(anchor, [
       { label: "Открыть тактики", icon: "target", onClick: () => go("#/tactics/" + m.id) },
-      { label: "Изменить карту", icon: "edit", onClick: () => sheetMap(m) },
       { label: "Новая тактика", icon: "plus", onClick: () => sheetNewTactic(m.id) },
+      { label: "Дефолтные схемы карты", icon: "refresh", onClick: () => loadMapDefaults(m) },
+      { label: "Изменить карту", icon: "edit", onClick: () => sheetMap(m) },
       { sep: true },
       { label: "Удалить карту", icon: "trash", danger: true, onClick: () => deleteMap(m) },
     ]);
@@ -2203,23 +2360,40 @@
   /* ============================================================
      Чат
      ============================================================ */
+  /* ============================================================
+     Чат команды: современная лента с пузырями, группировкой,
+     разделителями дней и закреплённым объявлением (как в ТГ).
+     ============================================================ */
+  function authorColor(name) {
+    const p = DB.cache.players.find((x) => x.name === name);
+    if (p && p.color) return p.color;
+    const palette = ["#f0b429", "#5aa9ff", "#4fd18b", "#b98cff", "#ff8ac2", "#ff9770", "#06d6a0"];
+    let h = 0;
+    String(name || "").split("").forEach((ch) => { h = (h * 31 + ch.charCodeAt(0)) >>> 0; });
+    return palette[h % palette.length];
+  }
+  function fmtDay(ts) {
+    const d = new Date(ts || Date.now());
+    const same = (a, b) => a.toDateString() === b.toDateString();
+    if (same(d, new Date())) return "Сегодня";
+    if (same(d, new Date(Date.now() - 864e5))) return "Вчера";
+    try { return new Intl.DateTimeFormat("ru", { day: "numeric", month: "long" }).format(d); }
+    catch (e) { return d.toLocaleDateString(); }
+  }
   function viewChat() {
     const msgs = (DB.cache.messages || []).slice().sort((a, b) => (a.ts || 0) - (b.ts || 0));
     const notice = msgs.slice().reverse().find((x) => x.kind === "notice");
     let h = '<header class="page-head"><div><h1>Чат команды</h1>' +
-      '<p class="sub">' + (DB.mode() === "cloud" ? "Сообщения приходят всем сразу" : "Локальный режим: чат виден только на этом устройстве") + "</p></div>" +
-      (isCap() ? '<div class="head-actions"><button class="btn btn-ghost btn-sm' + (S.chatNotice ? " on" : "") + '" type="button" data-notice>' +
-        ic("megaphone") + " Объявление</button></div>" : "") + "</header>";
+      '<p class="sub">' + (DB.mode() === "cloud" ? "Сообщения приходят всем сразу" : "Локальный режим: чат виден только на этом устройстве") + "</p></div></header>";
 
     h += '<section class="card chatcard"><div class="card-body tight">';
-    if (notice) {
-      h += '<div class="notice">' + ic("megaphone") + "<div><b>Объявление · " + esc(notice.author || "Капитан") + "</b>" +
-        "<p>" + esc(notice.text) + "</p><small>" + esc(fmtTime(notice.ts)) + "</small></div></div>";
-    }
+    h += pinnedBarHTML(notice);
     h += '<div class="chatlist" id="chatList">' + chatListHTML(msgs) + "</div>";
     h += "</div></section>";
 
-    h += '<form class="composer" id="chatForm">' +
+    h += '<form class="composer' + (S.chatNotice ? " notice-on" : "") + '" id="chatForm">' +
+      (isCap() ? '<button class="composer-notice' + (S.chatNotice ? " on" : "") + '" type="button" data-notice title="Режим объявления для команды">' +
+        ic("megaphone") + "</button>" : "") +
       '<input id="chatText" maxlength="500" autocomplete="off" placeholder="' +
       (S.chatNotice ? "Текст объявления для команды…" : "Сообщение команде…") + '" value="' + attr(S.chatDraft) + '">' +
       '<button class="btn btn-primary btn-send" type="submit" data-send>' + ic("send") + "<span>Отправить</span></button>" +
@@ -2230,28 +2404,89 @@
     if (list) list.scrollTop = list.scrollHeight;
     const nf = $("[data-notice]");
     if (nf) nf.onclick = () => { S.chatNotice = !S.chatNotice; viewChat(); $("#chatText").focus(); };
+    bindPinned();
     const input = $("#chatText");
     input.oninput = () => { S.chatDraft = input.value; };
     $("#chatForm").onsubmit = (e) => { e.preventDefault(); sendChat(input); };
     bindChatItems();
     window.scrollTo(0, document.body.scrollHeight);
   }
+  function openPinnedNotice(notice) {
+    if (!notice) return;
+    openSheet("Объявление",
+      '<div class="pinned-full">' +
+      '<div class="pinned-full-head">' + ic("megaphone") + "<b>" + esc(notice.author || "Капитан") + "</b>" +
+      "<time>" + esc(fmtTime(notice.ts)) + "</time></div>" +
+      '<p class="pinned-full-text">' + esc(notice.text) + "</p></div>",
+      (isCap() ? '<button class="btn btn-danger" type="button" data-unpin>Открепить и удалить</button>' : "") +
+      '<button class="btn btn-ghost" type="button" data-x>Закрыть</button>');
+    $("[data-x]").onclick = closeSheet;
+    const un = $("[data-unpin]");
+    if (un) un.onclick = () => {
+      confirmDlg("Удалить объявление?", "Сообщение-объявление исчезнет из чата и открепы у всех.", async () => {
+        try {
+          await DB.deleteMessage(notice.id);
+          closeSheet();
+          toast("Объявление удалено", "ok");
+          viewChat();
+        } catch (e) { toast(UI.friendlyError(e, "Не удалось удалить"), "err"); }
+      });
+    };
+  }
+  /** Последнее объявление команды (для закрепа). */
+  function currentNotice() {
+    const msgs = (DB.cache.messages || []).slice().sort((a, b) => (a.ts || 0) - (b.ts || 0));
+    return msgs.reverse().find((x) => x.kind === "notice");
+  }
+  function pinnedBarHTML(notice) {
+    if (!notice) return "";
+    return '<button class="pinned" type="button" data-pinopen title="Открыть объявление">' +
+      '<span class="pinned-ic">' + ic("megaphone") + "</span>" +
+      '<span class="pinned-body"><b>Закреплено · ' + esc(notice.author || "Капитан") + "</b>" +
+      '<span class="pinned-text">' + esc(notice.text) + "</span></span>" +
+      '<span class="pinned-open">' + ic("chevron") + "</span></button>";
+  }
+  function bindPinned() {
+    const po = $("[data-pinopen]");
+    if (po) po.onclick = () => openPinnedNotice(currentNotice());
+  }
+  /** Закреп обновляется вместе с лентой: отправил объявление — оно сразу наверху. */
+  function refreshPinnedBar() {
+    const body = $(".chatcard .card-body");
+    if (!body) return;
+    const old = body.querySelector("[data-pinopen]");
+    if (old) old.remove();
+    const notice = currentNotice();
+    const list = body.querySelector("#chatList");
+    if (notice && list) list.insertAdjacentHTML("beforebegin", pinnedBarHTML(notice));
+    bindPinned();
+  }
   function chatListHTML(msgs) {
     const me = DB.actorName();
     if (!msgs.length && !S.chatPending.length) {
       return emptyState("chat", "Сообщений пока нет", "Напишите первое — команда увидит его сразу.");
     }
-    let h = "";
-    msgs.forEach((m) => { h += chatMsgHTML(m, me); });
-    S.chatPending.forEach((m) => { h += chatMsgHTML(m, me); });
+    let h = "", lastDay = "", lastAuthor = null;
+    const push = (m) => {
+      const day = fmtDay(m.ts);
+      if (day !== lastDay) { h += '<div class="daychip">' + day + "</div>"; lastDay = day; lastAuthor = null; }
+      const first = m.author !== lastAuthor || m.kind === "notice";
+      h += chatMsgHTML(m, me, first);
+      lastAuthor = m.kind === "notice" ? null : m.author;
+    };
+    msgs.forEach(push);
+    S.chatPending.forEach(push);
     return h;
   }
-  function chatMsgHTML(m, me) {
+  function chatMsgHTML(m, me, first) {
     const mine = m.author === me;
     const st = m._state || "sent";
-    return '<div class="msg' + (mine ? " me" : "") + (m.kind === "notice" ? " notice" : "") + (st !== "sent" ? " " + st : "") +
+    return '<div class="msg' + (mine ? " me" : "") + (m.kind === "notice" ? " notice" : "") + (first ? " first" : "") + (st !== "sent" ? " " + st : "") +
       '" data-msg="' + attr(m.id || "") + '">' +
-      '<div class="msg-head"><b>' + esc(m.author || "—") + "</b><time>" + (st === "sending" ? "отправляем…" : esc(fmtTime(m.ts))) +
+      '<span class="avatar" style="--pc:' + attr(authorColor(m.author)) + '"></span>' +
+      '<div class="bubble">' +
+      '<div class="msg-head"><b style="color:' + attr(authorColor(m.author)) + '">' + esc(m.author || "—") + "</b>" +
+      "<time>" + (st === "sending" ? "отправляем…" : esc(fmtTime(m.ts))) +
       (st === "failed" ? ' · <span class="msg-err">не отправлено</span>' : "") + "</time>" +
       ((st === "sent" && DB.canDeleteMessage(m)) ? '<button class="ibtn msg-del" type="button" data-del="' + attr(m.id) + '" title="Удалить сообщение">' + ic("trash") + "</button>" : "") +
       "</div>" +
@@ -2259,7 +2494,7 @@
       (st === "failed" ? '<div class="msg-actions"><button class="btn btn-ghost btn-sm" type="button" data-retry="' + attr(m.id) + '">' +
         ic("refresh") + " Повторить</button>" +
         '<button class="btn btn-ghost btn-sm" type="button" data-drop="' + attr(m.id) + '">Убрать</button></div>' : "") +
-      "</div>";
+      "</div></div>";
   }
   function bindChatItems() {
     $$("[data-del]").forEach((b) => {
@@ -2295,6 +2530,7 @@
     if (!list) return;
     const msgs = (DB.cache.messages || []).slice().sort((a, b) => (a.ts || 0) - (b.ts || 0));
     list.innerHTML = chatListHTML(msgs);
+    refreshPinnedBar();
     bindChatItems();
     list.scrollTop = list.scrollHeight;
   }
@@ -2456,7 +2692,14 @@
       "<dt>Капитан</dt><dd>" + esc(DB.team.captainName || "—") + "</dd>" +
       (isCap() ? "<dt>PIN команды</dt><dd><button class=\"btn btn-ghost btn-sm\" type=\"button\" data-pin=\"team\">Сменить PIN</button></dd>" +
         "<dt>PIN капитана</dt><dd><button class=\"btn btn-ghost btn-sm\" type=\"button\" data-pin=\"captain\">Сменить PIN</button></dd>" : "") +
-      "</dl></div></section>";
+      "</dl>" +
+      (isCap() ? '<div class="invitebox">' +
+        '<div class="invite-head">' + ic("link") + "<b>Пригласительная ссылка для игроков</b></div>" +
+        '<p class="hint">Отправьте сокомандникам — по ссылке откроется вход, где останется ввести PIN команды.</p>' +
+        '<div class="inviterow"><code id="invLink">' + esc(inviteLink()) + "</code></div>" +
+        '<div class="btnrow"><button class=\"btn btn-ghost btn-sm\" type=\"button\" data-invcopy>' + ic("copy") + " Скопировать</button>" +
+        '<button class="btn btn-ghost btn-sm" type="button" data-invshare>' + ic("send") + " Поделиться</button></div></div>" : "") +
+      "</div></section>";
 
     /* Игроки */
     h += '<section class="card"><div class="card-head"><h2>' + ic("users") + "Игроки · " + DB.cache.players.length + "</h2>" +
@@ -2538,6 +2781,9 @@
   function bindSettings() {
     const capin = $("[data-capin]");
     if (capin) capin.onclick = () => askCaptainPin("");
+    const invc = $("[data-invcopy]");
+    if (invc) invc.onclick = () => copyText(inviteLink(), "Ссылка скопирована — отправьте её команде");
+    bindShare($("[data-invshare]"), inviteLink());
     const capout = $("[data-capout]");
     if (capout) capout.onclick = () => {
       DB.role = "player";
