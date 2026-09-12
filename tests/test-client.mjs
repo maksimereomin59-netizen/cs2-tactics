@@ -21,7 +21,7 @@ const check = (name, ok, extra = "") => {
 function makeBackend() {
   return {
     teams: {},
-    rows: { players: [], maps: [], tactics: [], materials: [], templates: [], activity: [] },
+    rows: { players: [], maps: [], tactics: [], materials: [], templates: [], activity: [], messages: [] },
     calls: [],
     channels: [],
     nextId: 1,
@@ -150,7 +150,7 @@ async function main() {
 
   await DB.createTeam({ name: "Alpha", pin: "1234", captain: "Макс", captainPin: "9876" });
   check("cloud: команда создана, роль captain", DB.isCaptain() && DB.team.name === "Alpha");
-  check("cloud: подписки realtime на 6 таблиц", be.channels.filter((c) => c.subscribed).length === 6,
+  check("cloud: подписки realtime на все таблицы (7 с чатом)", be.channels.filter((c) => c.subscribed).length === 7,
     `каналов: ${be.channels.length}`);
 
   /* 3. Порядок новых строк: 1, 2, 3 (главный фикс) */

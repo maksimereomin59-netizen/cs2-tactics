@@ -8,7 +8,7 @@
 (function () {
   "use strict";
 
-  const TABLES = ["players", "maps", "tactics", "materials", "templates", "activity"];
+  const TABLES = ["players", "maps", "tactics", "materials", "templates", "activity", "messages"];
   // Таблицы с ручным порядком: новую строку всегда ставим в конец списка,
   // иначе у капитана и у игроков список отсортируется по-разному.
   const POS_TABLES = ["players", "maps", "tactics", "materials"];
@@ -111,8 +111,11 @@
     return this.db.teams.find((t) => normName(t.name).toLowerCase() === want) || null;
   };
   LocalAdapter.prototype.bucket = function (teamId) {
-    if (!this.db.data[teamId]) this.db.data[teamId] = { players: [], maps: [], tactics: [], materials: [], templates: [], activity: [] };
-    return this.db.data[teamId];
+    if (!this.db.data[teamId]) this.db.data[teamId] = {};
+    const b = this.db.data[teamId];
+    // Команды, созданные до появления новых таблиц: доводим корзину до полного набора.
+    TABLES.forEach((t) => { if (!b[t]) b[t] = []; });
+    return b;
   };
 
   LocalAdapter.prototype.createTeam = async function (input) {
@@ -189,7 +192,7 @@
   };
   LocalAdapter.prototype.list = async function (table, teamId) {
     const rows = (this.bucket(teamId)[table] || []).slice();
-    rows.sort((a, b) => (table === "activity" ? (b.ts - a.ts) : ((a.pos || 0) - (b.pos || 0))));
+    rows.sort((a, b) => (table === "activity" ? (b.ts - a.ts) : table === "messages" ? (a.ts - b.ts) : ((a.pos || 0) - (b.pos || 0))));
     return clone(rows);
   };
   LocalAdapter.prototype.get = async function (table, teamId, id) {
@@ -212,7 +215,7 @@
     this.emit({ type: "data", table, origin: "local", id: row.id });
     return clone(row);
   };
-  LocalAdapter.prototype.del = async function (table, teamId, id) {
+  LocalAdapter.prototype.del = async function (table, teamId, id, silent) {
     const bucket = this.bucket(teamId);
     bucket[table] = (bucket[table] || []).filter((r) => r.id !== id);
     // Каскад: удаление карты отвязывает тактики и материалы.
@@ -221,7 +224,7 @@
       (bucket.materials || []).forEach((m) => { if (m.map_id === id) { m.map_id = null; m.updated_at = Date.now(); } });
     }
     this.persist();
-    this.emit({ type: "data", table, origin: "local", id });
+    if (!silent) this.emit({ type: "data", table, origin: "local", id });
   };
   LocalAdapter.prototype.reorder = async function (table, teamId, ids) {
     const rows = this.bucket(teamId)[table] || [];
@@ -353,8 +356,10 @@
     this.teamId = null;
   };
   SupabaseAdapter.prototype.list = async function (table, teamId) {
-    const orderCol = table === "activity" ? "ts" : (table === "templates" ? "created_at" : "pos");
-    const { data, error } = await this.client.from(table).select("*").eq("team_id", teamId).order(orderCol, { ascending: table === "activity" ? false : true }).limit(table === "activity" ? 60 : 1000);
+    const orderCol = (table === "activity" || table === "messages") ? "ts" : (table === "templates" ? "created_at" : "pos");
+    const { data, error } = await this.client.from(table).select("*").eq("team_id", teamId)
+      .order(orderCol, { ascending: table === "activity" ? false : true })
+      .limit(table === "activity" ? 60 : table === "messages" ? 400 : 1000);
     if (error) rpcErr(error);
     return data || [];
   };
@@ -382,10 +387,10 @@
     this.emit({ type: "data", table, origin: "local", id: res.data.id });
     return res.data;
   };
-  SupabaseAdapter.prototype.del = async function (table, teamId, id) {
+  SupabaseAdapter.prototype.del = async function (table, teamId, id, silent) {
     const { error } = await this.client.from(table).delete().eq("id", id).eq("team_id", teamId);
     if (error) rpcErr(error);
-    this.emit({ type: "data", table, origin: "local", id });
+    if (!silent) this.emit({ type: "data", table, origin: "local", id });
   };
   SupabaseAdapter.prototype.reorder = async function (table, teamId, ids) {
     // Пакетно: по одному update на строку (списки короткие).
@@ -430,7 +435,7 @@
     role: "player",
     online: HAS_WINDOW ? (typeof navigator !== "undefined" ? navigator.onLine !== false : true) : true,
     listeners: [],
-    cache: { players: [], maps: [], tactics: [], materials: [], templates: [], activity: [] },
+    cache: { players: [], maps: [], tactics: [], materials: [], templates: [], activity: [], messages: [] },
     cacheLoaded: false,
 
     on(cb) { this.listeners.push(cb); },
@@ -556,13 +561,16 @@
     },
     logout() {
       this.clearSession();
-      this.cache = { players: [], maps: [], tactics: [], materials: [], templates: [], activity: [] };
+      this.cache = { players: [], maps: [], tactics: [], materials: [], templates: [], activity: [], messages: [] };
       this.emit({ type: "team" });
     },
 
     async refresh(table) {
       if (!this.team) return;
       const tables = table && table !== "*" ? [table] : TABLES;
+      // Пока капитан держит несохранённый черновик схемы, тактики из базы не
+      // перечитываем: рабочий объект доски живёт в кэше и не должен подменяться.
+      const skip = (t) => t === "tactics" && typeof this.draftGuard === "function" && this.draftGuard();
       // Офлайн в облачном режиме: отдаём кэш.
       if (this.mode() === "cloud" && !this.online) {
         const snap = readJSON(LS_CACHE, null);
@@ -573,6 +581,7 @@
         return;
       }
       for (const t of tables) {
+        if (skip(t)) continue;
         try { this.cache[t] = await this.adapter.list(t, this.team.id); }
         catch (e) {
           if (this.mode() === "cloud") {
@@ -600,6 +609,18 @@
       if (this.mode() === "cloud" && !this.online) throw err("OFFLINE", "Нет соединения");
       await this.adapter.reorder(table, this.team.id, ids);
       await this.refresh(table);
+    },
+    /** Массовая очистка таблиц (капитанский сброс содержимого): удаляем без штормa событий. */
+    async purge(tables) {
+      if (!this.team) return;
+      for (const t of tables) {
+        const rows = (this.cache[t] || []).slice();
+        for (const r of rows) {
+          try { await this.adapter.del(t, this.team.id, r.id, true); } catch (e) {}
+        }
+      }
+      await this.refresh("*");
+      this.emit({ type: "data", table: "*", origin: "local" });
     },
     async log(text, ref) {
       try { await this.adapter.log(this.team.id, this.actorName(), text, ref); } catch (e) {}

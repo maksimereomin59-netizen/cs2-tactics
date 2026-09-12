@@ -43,7 +43,7 @@
 подписки realtime и корзину для файлов команды.
 
 Проверить, что всё на месте: **Table Editor** — должны быть `teams`, `memberships`,
-`players`, `maps`, `tactics`, `materials`, `templates`, `activity`.
+`players`, `maps`, `tactics`, `materials`, `templates`, `activity`, `messages` (чат команды).
 
 > Схему можно запускать повторно — она написана идемпотентно и ничего не удалит.
 > Так же обновляйте её после изменений в репозитории.

@@ -110,7 +110,18 @@ check("управление: экспорт/импорт вернулись в �
 window.location.hash = "#/tactics";
 window.dispatchEvent(new window.Event("hashchange"));
 await new Promise((r) => setTimeout(r, 300));
-check("тактики: список отрисован из стартового набора", /tactics|Тактик|Mirage|Dust/i.test(view.textContent),
+check("тактики: витрина выбора карты отрисована", /Mirage|Dust|Ancient/i.test(view.textContent),
+  view.textContent.replace(/\s+/g, " ").slice(0, 80));
+check("тактики: карты показаны крупными фото-карточками",
+  view.querySelectorAll(".mapcard").length >= 3, String(view.querySelectorAll(".mapcard").length));
+
+/* карточка карты ведёт к тактикам этой карты */
+const firstCard = view.querySelector('.mapcard[href^="#/tactics/"]');
+check("тактики: карточка карты ведёт к тактикам карты", !!firstCard);
+window.location.hash = firstCard.getAttribute("href").replace(/^#/, "");
+window.dispatchEvent(new window.Event("hashchange"));
+await new Promise((r) => setTimeout(r, 300));
+check("тактики: список тактик карты отрисован", /tactics|Тактик|Mirage|Dust/i.test(view.textContent),
   view.textContent.replace(/\s+/g, " ").slice(0, 80));
 
 /* --- схема капитана: рисование прямо на карте --- */
@@ -172,6 +183,11 @@ fireAt("pointerdown", svgNow());
 await sleep(450);
 check("схема: тап «Номер» добавляет номер", !!boardNow().querySelector("[data-draw]"));
 
+await sleep(400);
+/* Сохранение теперь явное: черновик схемы уходит в базу по кнопке «Сохранить» */
+check("схема: есть кнопка явного сохранения черновика", !!boardNow().querySelector("[data-bsave]"));
+check("схема: черновик помечен как несохранённый", !!boardNow().querySelector("[data-bsave].dirty"));
+boardNow().querySelector("[data-bsave]").click();
 await sleep(400);
 const saved = boardBlockNow();
 check("схема: правки сохранены в хранилище, а не только в DOM",
@@ -253,6 +269,31 @@ check("управление: затемнение фона регулирует�
 sh.querySelector(".sheet-head [data-close]").click();
 await sleep(120);
 
+/* --- чат команды: капитан пишет, сообщение появляется --- */
+window.location.hash = "#/chat";
+window.dispatchEvent(new window.Event("hashchange"));
+await sleep(250);
+check("чат: раздел открылся", /Чат команды/.test(view.textContent), view.textContent.replace(/\s+/g, " ").slice(0, 60));
+check("чат: у капитана есть режим объявления", !!window.document.querySelector("[data-notice]"));
+window.document.querySelector("#chatText").value = "Сегодня разбор в 20:00";
+window.document.querySelector("#chatForm").dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
+await sleep(350);
+check("чат: сообщение появилось в ленте", /Сегодня разбор в 20:00/.test(view.textContent));
+
+/* --- сброс содержимого: шторка с выбором таблиц --- */
+window.location.hash = "#/manage";
+window.dispatchEvent(new window.Event("hashchange"));
+await sleep(250);
+check("управление: есть раздел сброса содержимого", !!window.document.querySelector("[data-purge]"));
+window.document.querySelector("[data-purge]").click();
+await sleep(150);
+const pg = window.document.querySelector("#sheetRoot");
+check("сброс: шторка предлагает выбрать, что удалить",
+  !!pg.querySelector('[data-pt="tactics"]') && !!pg.querySelector('[data-pt="players"]'),
+  pg.textContent.replace(/\s+/g, " ").slice(0, 70));
+pg.querySelector(".sheet-head [data-close]").click();
+await sleep(120);
+
 /* --- выход: стекло, блюр и подсказка последней команды --- */
 window.document.querySelector("[data-logout]").click();
 await sleep(300);
@@ -274,6 +315,10 @@ $("#liPin").value = "1234";
 $("#loginForm").dispatchEvent(new window.Event("submit", { bubbles: true, cancelable: true }));
 await sleep(500);
 window.location.hash = "#/tactics";
+window.dispatchEvent(new window.Event("hashchange"));
+await sleep(250);
+const plCard = window.document.querySelector('.mapcard[href^="#/tactics/"]');
+window.location.hash = plCard.getAttribute("href").replace(/^#/, "");
 window.dispatchEvent(new window.Event("hashchange"));
 await sleep(250);
 const plLink = Array.from(window.document.querySelectorAll('a[href^="#/tactic/"]'))[0];
