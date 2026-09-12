@@ -4,7 +4,25 @@
 -- Перед этим: Authentication → Sign In / Up → включить "Allow anonymous sign-ins".
 -- ============================================================
 
-create extension if not exists pgcrypto;
+-- pgcrypto: в Supabase расширение живёт в схеме extensions (в self-hosted может
+-- быть и в public). Наши RPC помечены security definer set search_path = public,
+-- и если схему расширения не добавить в путь, Postgres отвечает
+-- «function crypt(text, text) does not exist» прямо на входе в команду.
+create schema if not exists extensions;
+create extension if not exists pgcrypto with schema extensions;
+-- Если pgcrypto уже стоит в public (self-hosted), дублируем обёртки в extensions,
+-- чтобы crypt/gen_salt находились при любом раскладе.
+do $pgc$ begin
+  if exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+             where p.proname = 'crypt' and n.nspname = 'public')
+     and not exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+             where p.proname = 'crypt' and n.nspname = 'extensions') then
+    create function extensions.crypt(text, text) returns text
+      language sql immutable as $$ select public.crypt($1, $2) $$;
+    create function extensions.gen_salt(text) returns text
+      language sql volatile as $$ select public.gen_salt($1) $$;
+  end if;
+end $pgc$;
 
 -- ---------------- teams ----------------
 create table if not exists teams (
@@ -124,11 +142,11 @@ create index if not exists messages_team_idx on messages (team_id, ts);
 
 -- ---------------- helpers ----------------
 create or replace function public.is_member(p_team uuid)
-returns boolean language sql stable security definer set search_path = public as
+returns boolean language sql stable security definer set search_path = public, extensions as
 $$ select exists (select 1 from memberships m where m.team_id = p_team and m.user_id = auth.uid()) $$;
 
 create or replace function public.is_captain(p_team uuid)
-returns boolean language sql stable security definer set search_path = public as
+returns boolean language sql stable security definer set search_path = public, extensions as
 $$ select exists (select 1 from memberships m where m.team_id = p_team and m.user_id = auth.uid() and m.role = 'captain') $$;
 
 create or replace function public.touch_updated_at()
@@ -174,7 +192,7 @@ end $$;
 -- security definer: иначе DELETE выполняется от имени игрока, RLS его не пропускает
 -- (политики на delete в activity нет) и журнал растёт бесконечно.
 create or replace function public.trim_activity()
-returns trigger language plpgsql security definer set search_path = public as
+returns trigger language plpgsql security definer set search_path = public, extensions as
 $$ begin
   delete from activity a where a.team_id = new.team_id and a.id not in (
     select id from activity where team_id = new.team_id order by ts desc limit 60
@@ -252,7 +270,7 @@ end $$;
 
 -- ---------------- RPC: server-side PIN verification ----------------
 create or replace function public.team_login(p_name text, p_pin text)
-returns jsonb language plpgsql security definer set search_path = public as
+returns jsonb language plpgsql security definer set search_path = public, extensions as
 $$
 declare t teams%rowtype; r text;
 begin
@@ -267,7 +285,7 @@ begin
 end $$;
 
 create or replace function public.team_create(p_name text, p_pin text, p_captain text, p_captain_pin text)
-returns jsonb language plpgsql security definer set search_path = public as
+returns jsonb language plpgsql security definer set search_path = public, extensions as
 $$
 declare t teams%rowtype;
 begin
@@ -283,7 +301,7 @@ begin
 end $$;
 
 create or replace function public.claim_captain(p_team_id uuid, p_pin text)
-returns jsonb language plpgsql security definer set search_path = public as
+returns jsonb language plpgsql security definer set search_path = public, extensions as
 $$
 declare t teams%rowtype;
 begin
@@ -296,7 +314,7 @@ begin
 end $$;
 
 create or replace function public.team_set_pin(p_team_id uuid, p_kind text, p_new text)
-returns void language plpgsql security definer set search_path = public as
+returns void language plpgsql security definer set search_path = public, extensions as
 $$
 begin
   if not is_captain(p_team_id) then raise exception 'DENIED'; end if;
@@ -316,6 +334,19 @@ begin
   else
     raise exception 'BAD_INPUT';
   end if;
+end $$;
+
+-- ---------------- RPC: метаданные команды для пригласительной ссылки ----------------
+-- Капитан делится ссылкой #/join/<id>: команда находится по uuid без знания
+-- названия, игроку остаётся ввести PIN. UUID не угадать, отдаём только имя.
+create or replace function public.team_info(p_team uuid)
+returns jsonb language plpgsql stable security definer set search_path = public, extensions as
+$$
+declare t teams%rowtype;
+begin
+  select * into t from teams where id = p_team;
+  if t.id is null then raise exception 'NO_TEAM'; end if;
+  return jsonb_build_object('id', t.id, 'name', t.name, 'captain_name', t.captain_name);
 end $$;
 
 -- ---------------- Realtime ----------------
