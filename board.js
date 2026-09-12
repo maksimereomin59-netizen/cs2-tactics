@@ -427,8 +427,11 @@
 
       if (m.kind === "player") {
         const p = playerById(m.playerId);
-        const idx = p ? playerIndex(p) : "?";
-        const nick = p ? String(p.name).slice(0, 12) : "";
+        let idx, nick;
+        if (p) { idx = String(playerIndex(p)); nick = String(p.name).slice(0, 12); }
+        else if (m.genericNum != null) { idx = String(m.genericNum); nick = String(m.genericName || "Игрок " + idx).slice(0, 12); }
+        else if (m.label && /^\d+$/.test(String(m.label).trim())) { idx = String(m.label).trim(); nick = ""; }
+        else { idx = String((b.markers.filter((x) => x.kind === "player").indexOf(m) + 1) || "?"); nick = ""; }
         const style = b.markerStyle || "number";
         let inner;
         if (style === "nick" || style === "both") {
@@ -748,7 +751,7 @@
         path: "Ставьте точки маршрута по карте. Готово — нажмите «Готово» или Enter.",
         arrow: "Тяните от точки к точке. Конец у токена прилипнет к игроку.",
         zone: "Тяните, чтобы задать размер зоны.",
-        player: st.pendingPlayer ? "Поставить: " + playerName(st.pendingPlayer) : "Нажмите на карту — поставим следующего свободного игрока.",
+        player: st.pendingPlayer ? "Поставить: " + playerName(st.pendingPlayer) : (players().length ? "Нажмите на карту — поставим игрока (доступны " + (players().length - b.markers.filter((m)=>m.kind==="player").length) + " своб., можно ставить сколько угодно)" : "Нажмите на карту — поставим игрока (состав пуст: токены будут пронумерованы 1,2,…)"),
         enemy: "Нажмите на карту — поставим противника.",
         text: "Нажмите на карту и введите текст.",
         eraser: "Нажмите на элемент, чтобы удалить его.",
@@ -763,21 +766,35 @@
       return players().find((p) => used.indexOf(p.id) < 0) || null;
     }
     function placePlayer(pt) {
-      const p = st.pendingPlayer ? playerById(st.pendingPlayer) : nextFreePlayer();
+      let p = st.pendingPlayer ? playerById(st.pendingPlayer) : nextFreePlayer();
+      // Если все игроки уже на схеме — разрешаем ставить сколько угодно:
+      // берём игрока в фокусе, затем первого из состава, затем generic
       if (!p) {
-        opts.onToast && opts.onToast("Весь состав уже на схеме — перенесите токены вручную", "warn");
+        if (st.focus) p = playerById(st.focus);
+        if (!p && players().length) p = players()[0];
+      }
+      if (p) {
+        pushHist();
+        const mk = { id: uid("m"), kind: "player", playerId: p.id, x: pt.x, y: pt.y, color: p.color || "", label: "", note: "" };
+        b.markers.push(mk);
+        st.sel = mk.id;
         st.pendingPlayer = null;
-        setTool("select");
+        commit();
+        notifySelect();
+        opts.onToast && opts.onToast("Поставлен " + p.name + " · номер " + playerIndex(p));
         return;
       }
+      // Состав пуст — ставим generic токен с номером
+      const count = b.markers.filter((m) => m.kind === "player").length + 1;
+      const col = st.color || (COLORS[count % COLORS.length] || COLORS[0]).c;
       pushHist();
-      const mk = { id: uid("m"), kind: "player", playerId: p.id, x: pt.x, y: pt.y, color: p.color || "", label: "", note: "" };
+      const mk = { id: uid("m"), kind: "player", playerId: null, genericNum: count, genericName: "Игрок " + count, x: pt.x, y: pt.y, color: col, label: "", note: "" };
       b.markers.push(mk);
       st.sel = mk.id;
       st.pendingPlayer = null;
       commit();
       notifySelect();
-      opts.onToast && opts.onToast("Поставлен " + p.name + " · номер " + playerIndex(p));
+      opts.onToast && opts.onToast("Поставлен игрок " + count + " (состав пуст — токен без привязки)");
     }
     function placeMarker(kind, pt) {
       pushHist();
@@ -1280,12 +1297,36 @@
       }
     }
     function autoPlace() {
-      const list = players().slice(0, 5);
-      if (!list.length) { opts.onToast && opts.onToast("Сначала добавьте игроков в состав", "warn"); return; }
       const zone = opts.spawnZone ? opts.spawnZone() : null;
-      const n = list.length;
       pushHist();
       b.markers = b.markers.filter((m) => m.kind !== "player");
+      let list = players().slice(0, 5);
+      // Если состав пуст — расставляем 5 generic токенов
+      if (!list.length) {
+        const n = 5;
+        for (let i = 0; i < n; i++) {
+          let x, y;
+          if (zone) {
+            const spread = Math.max(16, zone.w || 18);
+            const step = spread / (n - 1 || 1);
+            x = zone.x - spread / 2 + step * i;
+            y = zone.y + (i % 2 ? 3 : -3);
+          } else {
+            x = 22 + (54 / 4) * i;
+            y = (opts.side === "CT") ? 26 : 74;
+          }
+          const col = COLORS[i % COLORS.length].c;
+          b.markers.push({
+            id: uid("m"), kind: "player", playerId: null, genericNum: i + 1, genericName: "Игрок " + (i + 1), color: col,
+            x: r1(clamp100(x)), y: r1(clamp100(y)), label: "", note: "",
+          });
+        }
+        st.sel = null;
+        commit();
+        opts.onToast && opts.onToast("Расставлены 5 токенов (состав пуст — без привязки)", "ok");
+        return;
+      }
+      const n = list.length;
       list.forEach((p, i) => {
         let x, y;
         if (zone) {
