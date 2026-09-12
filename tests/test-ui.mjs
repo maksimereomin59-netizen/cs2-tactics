@@ -132,7 +132,7 @@ async function main() {
   await submit("#crForm", 1200);
   check("создание: команда создана, показан экран с PIN", /Команда создана/.test(txt(view())), txt(view()).slice(0, 60));
   check("создание: стартовый набор загружен (игроки, карты, тактики)",
-    DB().cache.players.length === 5 && DB().cache.maps.length === 3 && DB().cache.tactics.length === 12,
+    DB().cache.players.length === 5 && DB().cache.maps.length === 7 && DB().cache.tactics.length === 28,
     `игроков=${DB().cache.players.length}, карт=${DB().cache.maps.length}, тактик=${DB().cache.tactics.length}`);
   click("#openPb");
   await tick(300);
@@ -142,11 +142,11 @@ async function main() {
   const ov = txt(view());
   check("обзор: названа команда и капитан", /БРАТЫ/.test(ov) && /Капитан:\s*Макс/.test(ov), ov.slice(0, 70));
   check("обзор: есть блок «Что сделать сейчас»", /Что сделать сейчас/.test(ov));
-  check("обзор: показаны карты и количество тактик", /Карты и тактики/.test(ov) && $$(".maprow").length === 3,
+  check("обзор: показаны карты и количество тактик", /Карты и тактики/.test(ov) && $$(".maprow").length === 7,
     String($$(".maprow").length));
   check("обзор: убраны «Активные тактики» и лишняя статистика",
     !/Активные тактики/.test(ov) && $$(".statchip, .statgrid, .hero-strip").length === 0);
-  check("обзор: капитану предложены быстрые действия", $$("[data-q]").length === 2, String($$("[data-q]").length));
+  check("обзор: нет дублирующих кнопок создания тактики", $$("[data-q]").length === 0 && $$("[data-newtactic]").length === 0, String($$("[data-q]").length));
 
   /* профиль игрока → задачи в обзоре */
   click("[data-pickme]");
@@ -173,7 +173,7 @@ async function main() {
 
   /* ================= 5. Тактики: карты и фильтры ================= */
   await go("#/tactics", 250);
-  check("тактики: витрина карт отрисована", $$(".mapcard").length === 3 && /Mirage/i.test(txt(view())),
+  check("тактики: витрина карт отрисована", $$(".mapcard").length === 7 && /Mirage/i.test(txt(view())) && /Inferno/i.test(txt(view())),
     String($$(".mapcard").length));
   let mirage = DB().cache.maps.filter((m) => /mirage/i.test(m.name))[0];
   await go("#/tactics/" + mirage.id, 250);
@@ -402,7 +402,7 @@ async function main() {
   await go("#/tactic/" + created.id, 350);
   click("[data-tmenu]");
   await tick(200);
-  menuByLabel("Изменить");
+  menuByLabel("Детали и переименование");
   await tick(250);
   check("тактика: форма изменения открылась с текущими данными", $("#etName") && $("#etName").value === "Сплит А через палас",
     $("#etName") ? $("#etName").value : "нет поля");
@@ -611,14 +611,14 @@ async function main() {
   click("[data-addmap]");
   await tick(250);
   check("карты: форма добавления открылась", !!$("#mpName"));
-  $("#mpName").value = "Nuke";
+  $("#mpName").value = "Vertigo";
   click("[data-ok]");
   await tick(450);
-  const nuke = DB().cache.maps.filter((m) => m.name === "Nuke")[0];
+  const nuke = DB().cache.maps.filter((m) => m.name === "Vertigo")[0];
   check("карты: новая карта сохранена и открыта", !!nuke && window.location.hash === "#/tactics/" + nuke.id,
     window.location.hash);
   await go("#/tactics", 300);
-  check("карты: новая карта появилась в витрине", $$(".mapcard").length === 4, String($$(".mapcard").length));
+  check("карты: новая карта появилась в витрине", $$(".mapcard").length === 8, String($$(".mapcard").length));
   await go("#/tactics/" + nuke.id, 300);
   check("карты: у пустой карты понятное пустое состояние и кнопка создания",
     /Тактик на этой карте пока нет/.test(txt(view())) && !!$("[data-newt]"), txt(view()).slice(0, 70));
@@ -630,7 +630,7 @@ async function main() {
   click('[data-mbtn="yes"]');
   await tick(450);
   check("карты: удаление карты убирает её из витрины",
-    !DB().cache.maps.some((m) => m.id === nuke.id) && $$(".mapcard").length === 3, String($$(".mapcard").length));
+    !DB().cache.maps.some((m) => m.id === nuke.id) && $$(".mapcard").length === 7, String($$(".mapcard").length));
 
   /* ================= 13. Удаление тактики ================= */
   await go("#/tactics/" + mirage.id, 300);
@@ -714,6 +714,8 @@ async function main() {
   check("чат: объявление капитана сохраняется отдельным типом и показано сверху",
     DB().cache.messages.filter((m) => m.kind === "notice").length === 1 && !!$(".notice"),
     JSON.stringify(DB().cache.messages.map((m) => m.kind)));
+  check("чат: объявление закреплено сверху как в ТГ", !!$(".pinned") && /Закреплено/.test(txt($(".pinned"))),
+    txt($(".pinned")).slice(0, 70));
 
   /* удаление сообщения */
   const msgId = DB().cache.messages[0].id;
@@ -848,13 +850,29 @@ async function main() {
     v2.textContent.replace(/\s+/g, " ").slice(0, 60));
   check("перезагрузка: удалённые сущности не вернулись",
     !dom2.window.PlaybookDB.cache.tactics.some((t) => /\(копия\)$/.test(t.name)) &&
-    !dom2.window.PlaybookDB.cache.maps.some((m) => m.name === "Nuke") &&
+    !dom2.window.PlaybookDB.cache.maps.some((m) => m.id === nuke.id) &&
     dom2.window.PlaybookDB.cache.players.length === 5,
     `тактик=${dom2.window.PlaybookDB.cache.tactics.length}, игроков=${dom2.window.PlaybookDB.cache.players.length}`);
   check("перезагрузка: сообщений в чате столько же, сколько осталось",
     dom2.window.PlaybookDB.cache.messages.length === DB().cache.messages.length,
     `${dom2.window.PlaybookDB.cache.messages.length} против ${DB().cache.messages.length}`);
   check("перезагрузка: ошибок не появилось", errors2.length === 0, errors2.join(" | "));
+
+  /* ================= 18b. Пригласительная ссылка: вход по ссылке и PIN ================= */
+  const inviteTeamId = DB().team.id;
+  await go("#/settings", 300);
+  click("[data-logout]");
+  await tick(300);
+  click('[data-mbtn="yes"]');
+  await tick(400);
+  window.location.hash = "#/join/" + inviteTeamId;
+  await tick(400);
+  check("приглашение: экран по ссылке показывает команду и поле PIN",
+    /Вход в «БРАТЫ»/.test(txt(view())) && !!$("#joinPin"), txt(view()).slice(0, 70));
+  $("#joinPin").value = "1234";
+  await submit("#joinForm", 700);
+  check("приглашение: вход по ссылке работает, команда открыта",
+    DB().team && DB().team.name === "БРАТЫ", window.location.hash);
 
   /* ================= 19. Итоговые проверки качества ================= */
   check("качество: нативные confirm/prompt/alert не используются", nativeDialogs.length === 0, nativeDialogs.join(","));

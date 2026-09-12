@@ -117,6 +117,19 @@ async function main() {
   });
   await reset();
 
+  // ---------------------------------------------------------------- 2.1 пригласительная ссылка: team_info
+  await asUser(C, "authenticated", async () => {
+    const r = await db.query(`select team_info('${teamA}') as t`);
+    check("team_info: посторонний находит команду по uuid для входа по ссылке",
+      r.rows[0].t.name === "Alpha" && r.rows[0].t.captain_name === "Макс",
+      JSON.stringify(r.rows[0].t));
+  });
+  await reset();
+  await expectErr("team_info: несуществующая команда", "NO_TEAM", async () => {
+    await asUser(C, "authenticated", () => db.query(`select team_info('${C}')`));
+  });
+  await reset();
+
   // ---------------------------------------------------------------- 3. RLS: чтение игроком
   await db.exec(`insert into players(team_id, name) values ('${teamA}','s1mple')`);
   await asUser(B, "authenticated", async () => {
@@ -265,6 +278,41 @@ async function main() {
     check("min: членство доступно для чтения своему пользователю", r.rows.length === 1);
   });
   await reset();
+
+  // ---------------------------------------------------------------- 14. pgcrypto в схеме extensions — раскладка Supabase
+  // Регрессия: раньше RPC искали crypt() только в public, и живой Supabase
+  // отвечал «function crypt(text, text) does not exist» на входе в команду.
+  {
+    const db2 = new PGlite({ extensions: { pgcrypto } });
+    let ok = true, detail = "";
+    try {
+      await db2.exec(stubs);
+      await db2.exec(`
+        create extension if not exists pgcrypto;
+        create schema if not exists extensions;
+        alter function public.crypt(text, text) set schema extensions;
+        alter function public.gen_salt(text) set schema extensions;
+      `);
+      await db2.exec(schema);
+      await db2.exec(`
+        grant all on all tables in schema public to anon, authenticated;
+        grant execute on all functions in schema public to anon, authenticated;
+      `);
+      await db2.exec(`select set_config('request.jwt.claims', '{"sub":"${A}","role":"authenticated"}', false);`);
+      await db2.exec(`set role authenticated;`);
+      const r1 = await db2.query(`select team_create('Cloud','1234','Кап','9876') as t`);
+      const t = r1.rows[0].t;
+      const r2 = await db2.query(`select team_login('Cloud','1234') as t`);
+      await db2.query(`select team_set_pin('${t.id}','team','4321')`);
+      const r4 = await db2.query(`select team_login('Cloud','4321') as t`);
+      ok = t.role === "captain" && r2.rows[0].t.role === "captain" && r4.rows[0].t.role === "captain";
+      if (!ok) detail = "роли/PIN не сошлись";
+    } catch (e) {
+      ok = false;
+      detail = String(e.message).slice(0, 200);
+    }
+    check("schema: crypt/gen_salt работают, когда pgcrypto в схеме extensions (как в Supabase)", ok, detail);
+  }
 
   console.log(results.join("\n"));
   console.log(`\n${pass} passed, ${fail} failed`);

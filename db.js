@@ -144,6 +144,13 @@
   LocalAdapter.prototype.publicTeam = function (team) {
     return { id: team.id, name: team.name, captainName: team.captainName, settings: clone(team.settings), createdAt: team.createdAt };
   };
+  /* Пригласительная ссылка: команда находится по id без знания названия,
+     игроку остаётся ввести PIN. Возвращаются только публичные поля. */
+  LocalAdapter.prototype.teamById = async function (id) {
+    const team = this.db.teams.find((t) => t.id === id);
+    if (!team) throw err("NO_TEAM", "Команда не найдена");
+    return this.publicTeam(team);
+  };
   LocalAdapter.prototype.login = async function (input) {
     const team = this.findTeam(input.name);
     if (!team) throw err("NO_TEAM", "Команда не найдена");
@@ -330,6 +337,11 @@
     const { data, error } = await this.client.rpc("team_login", { p_name: normName(input.name), p_pin: String(input.pin) });
     if (error) rpcErr(error);
     return { team: this.pub(data), role: data.role || "player" };
+  };
+  SupabaseAdapter.prototype.teamById = async function (id) {
+    const { data, error } = await this.client.rpc("team_info", { p_team: id });
+    if (error) rpcErr(error);
+    return this.pub(data);
   };
   SupabaseAdapter.prototype.claimCaptain = async function (teamId, pin) {
     const { data, error } = await this.client.rpc("claim_captain", { p_team_id: teamId, p_pin: String(pin) });
@@ -600,6 +612,10 @@
       await this.refresh();
       this.emit({ type: "team" });
       return res;
+    },
+    /** Метаданные команды по id (для экрана входа по пригласительной ссылке). */
+    async teamInfo(id) {
+      return this.adapter.teamById(id);
     },
     async login(input) {
       const res = await this.adapter.login(input);
