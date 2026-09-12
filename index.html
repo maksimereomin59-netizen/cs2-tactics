@@ -8,9 +8,33 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="assets/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="assets/icon.svg">
-  <link rel="stylesheet" href="styles.css?v=8">
+  <link rel="stylesheet" href="styles.css?v=9">
 </head>
 <body>
+  <!-- Живой фон экрана входа: фото команды + анимированная разметка тактики. -->
+  <div class="authscene" id="authScene" aria-hidden="true">
+    <div class="authscene-par" id="authScenePar">
+      <div class="authscene-pre" id="authScenePre"></div>
+      <div class="authscene-img" id="authSceneImg"></div>
+      <svg class="authscene-tactic" viewBox="0 0 100 100" preserveAspectRatio="none">
+        <g class="atc-line l1"><path d="M12 84 C 28 78, 34 62, 50 56" /></g>
+        <g class="atc-line l2"><path d="M88 74 C 74 68, 70 52, 56 44" /></g>
+        <g class="atc-line l3"><path d="M50 56 C 55 46, 62 42, 70 30" /></g>
+        <g class="atc-zone"><ellipse cx="72" cy="26" rx="15" ry="10" /></g>
+        <circle class="atc-dot d1" cx="12" cy="84" r="2.1" />
+        <circle class="atc-dot d2" cx="50" cy="56" r="2.1" />
+        <circle class="atc-dot d3" cx="88" cy="74" r="2.1" />
+        <circle class="atc-dot d4" cx="70" cy="30" r="2.1" />
+        <path class="atc-head h1" d="M50 56 l-5.8 -1.1 3.1 4.5 z" />
+        <path class="atc-head h2" d="M56 44 l-5.4 -2.4 2.4 5 z" />
+        <path class="atc-head h3" d="M70 30 l-5.9 .2 3.6 4 z" />
+      </svg>
+    </div>
+    <div class="authscene-light"></div>
+    <div class="authscene-grain"></div>
+    <div class="authscene-scrim"></div>
+  </div>
+
   <header class="top" id="topbar" hidden>
     <div class="brand">
       <span class="brand-mark">CS2</span>
@@ -43,9 +67,9 @@
   <div class="toast-root" id="toastRoot"></div>
 
   <script src="supabase-config.js"></script>
-  <script src="data.js?v=8"></script>
-  <script src="db.js?v=8"></script>
-  <script src="seed.js?v=8"></script>
-  <script src="app.js?v=8"></script>
+  <script src="data.js?v=9"></script>
+  <script src="db.js?v=9"></script>
+  <script src="seed.js?v=9"></script>
+  <script src="app.js?v=9"></script>
 </body>
 </html>

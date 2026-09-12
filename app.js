@@ -53,6 +53,16 @@
     boardTool: "select",
     boardColor: "#e8a72f",
     boardSel: null,
+    boardWidth: 2,
+    boardDash: false,
+    boardHead: "end",
+    boardNade: "smoke",
+    boardGrid: false,
+    boardBig: null,
+    boardHist: {},
+    boardWait: null,
+    boardFrom: null,
+    boardBusy: false,
     sheetOpen: false,
     bootDone: false,
   };
@@ -89,6 +99,238 @@
       el.classList.remove("ok"); el.textContent = "Нет соединения";
     }
   }
+
+  /* ---------- экран входа: живое фото фоном ---------- */
+  const AUTH_BG_KEY = "cs2pb.authbg.v1";
+  const AUTH_BG_DEFAULT = "assets/kabany.jpg";
+  const AUTH_BG_PREVIEW = "assets/kabany.small.jpg";
+  /* localStorage — через window: в тестах (jsdom) голое имя недоступно. */
+  const lsGet = (k) => { try { return window.localStorage.getItem(k); } catch (e) { return null; } };
+  const lsSet = (k, v) => { try { window.localStorage.setItem(k, v); return true; } catch (e) { return false; } };
+  const lsDel = (k) => { try { window.localStorage.removeItem(k); } catch (e) {} };
+  function readAuthBg() {
+    try {
+      const v = JSON.parse(lsGet(AUTH_BG_KEY) || "null");
+      return v && typeof v === "object" ? v : null;
+    } catch (e) { return null; }
+  }
+  function authBgState() {
+    const st = readAuthBg() || {};
+    return {
+      src: st.src || AUTH_BG_DEFAULT,
+      preview: st.src ? st.src : AUTH_BG_PREVIEW,
+      blur: st.blur == null ? 3 : Math.max(0, Math.min(24, +st.blur || 0)),
+      dim: st.dim == null ? 46 : Math.max(0, Math.min(92, +st.dim || 0)),
+      custom: !!st.src,
+      teamKey: st.teamKey || "",
+    };
+  }
+  function writeAuthBg(patch) {
+    const cur = readAuthBg() || {};
+    const next = Object.assign({}, cur, patch || {});
+    const ok = lsSet(AUTH_BG_KEY, JSON.stringify(next));
+    applyAuthScene();
+    return ok;
+  }
+  function resetAuthBg() {
+    lsDel(AUTH_BG_KEY);
+    applyAuthScene();
+  }
+  function applyAuthScene() {
+    const scene = $("#authScene");
+    if (!scene) return;
+    const st = authBgState();
+    const img = $("#authSceneImg");
+    if (img) img.style.backgroundImage = 'url("' + st.src + '")';
+    const pre = $("#authScenePre");
+    if (pre) pre.style.backgroundImage = 'url("' + st.preview + '")';
+    scene.classList.toggle("isdefault", !st.custom);
+    document.documentElement.style.setProperty("--auth-blur", st.blur + "px");
+    document.documentElement.style.setProperty("--auth-dim", (st.dim / 100).toFixed(2));
+  }
+  /** Лёгкое движение фона за пальцем/курсором — то самое «чуть-чуть оживить». */
+  function bindAuthSceneFx() {
+    const scene = $("#authScene");
+    if (!scene || !window.requestAnimationFrame || scene.dataset.fx) return;
+    const reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)");
+    if (reduce && reduce.matches) return;   // человеку без анимаций — человеку без параллакса
+    scene.dataset.fx = "1";
+    const par = $("#authScenePar");
+    let tx = 0, ty = 0, cur = { x: 0, y: 0 }, raf = 0;
+    const tick = () => {
+      raf = 0;
+      cur.x += (tx - cur.x) * 0.12;
+      cur.y += (ty - cur.y) * 0.12;
+      if (par) {
+        par.style.transform = "translate3d(" + cur.x.toFixed(2) + "px," + cur.y.toFixed(2) + "px,0)";
+        par.style.setProperty("--tilt", (cur.x / 26).toFixed(3) + "deg");
+      }
+      if (Math.abs(tx - cur.x) > 0.2 || Math.abs(ty - cur.y) > 0.2) { raf = requestAnimationFrame(tick); }
+    };
+    const onMove = (e) => {
+      if (!document.body.classList.contains("auth-mode")) return;
+      const w = window.innerWidth || 1, h = window.innerHeight || 1;
+      tx = ((e.clientX / w) - 0.5) * 18;
+      ty = ((e.clientY / h) - 0.5) * 14;
+      if (!raf) raf = requestAnimationFrame(tick);
+    };
+    window.addEventListener("pointermove", onMove, { passive: true });
+    window.addEventListener("deviceorientation", (e) => {
+      if (!document.body.classList.contains("auth-mode") || e.gamma == null) return;
+      tx = Math.max(-16, Math.min(16, (e.gamma || 0) * 0.6));
+      ty = Math.max(-12, Math.min(12, ((e.beta || 0) - 45) * 0.35));
+      if (!raf) raf = requestAnimationFrame(tick);
+    });
+    window.addEventListener("resize", () => { tx = 0; ty = 0; if (!raf) raf = requestAnimationFrame(tick); }, { passive: true });
+  }
+
+  /* --- уменьшение картинки, чтобы в localStorage и в облако влезало --- */
+  function fileToDataUrl(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error("Не удалось прочитать файл"));
+      reader.readAsDataURL(file);
+    });
+  }
+  function shrinkDataUrl(src, maxW, quality) {
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = (v) => { if (!done) { done = true; resolve(v); } };
+      setTimeout(() => finish(src), 4000);
+      const img = document.createElement("img");
+      img.onload = () => {
+        try {
+          const w = img.naturalWidth || img.width || 0, h = img.naturalHeight || img.height || 0;
+          if (!w || !h) return finish(src);
+          const k = Math.min(1, maxW / w);
+          const cv = document.createElement("canvas");
+          cv.width = Math.max(1, Math.round(w * k));
+          cv.height = Math.max(1, Math.round(h * k));
+          const ctx = cv.getContext && cv.getContext("2d");
+          if (!ctx || !cv.toDataURL) return finish(src);
+          ctx.drawImage(img, 0, 0, cv.width, cv.height);
+          const out = cv.toDataURL("image/jpeg", quality);
+          finish(out && out.length && out.length < src.length ? out : src);
+        } catch (e) { finish(src); }
+      };
+      img.onerror = () => finish(src);
+      img.src = src;
+    });
+  }
+  /** Открыть системный выбор файла и поставить картинку фоном входа. */
+  function pickAuthBg(opts) {
+    const o = opts || {};
+    const inp = document.createElement("input");
+    inp.type = "file";
+    inp.accept = "image/*";
+    inp.style.display = "none";
+    document.body.appendChild(inp);
+    inp.onchange = async () => {
+      const f = inp.files && inp.files[0];
+      inp.remove();
+      if (!f) return;
+      if (f.size > 12 * 1024 * 1024) { toast("Файл больше 12 МБ — возьмите полегче", "warn"); return; }
+      saveState("saving");
+      try {
+        const raw = await fileToDataUrl(f);
+        const small = await shrinkDataUrl(raw, o.maxW || 1600, o.quality || 0.72);
+        if (o.onUrl) { await o.onUrl(small); return; }
+        const ok = writeAuthBg({ src: small, teamKey: "" });
+        applyAuthScene();
+        saveState("");
+        toast(ok ? "Фото на входе обновлено" : "Сохранено, но память устройства переполнена — возьмите файл меньше", ok ? "ok" : "warn");
+      } catch (e) {
+        saveState("");
+        toast((e && e.message) || "Не удалось обработать фото", "warn");
+      }
+    };
+    inp.click();
+  }
+
+  /* --- общий фон команды (лежит в settings, синхронизируется как всё остальное) --- */
+  function teamAuthBg() {
+    const st = DB.team && DB.team.settings;
+    return st && st.authBg && st.authBg.src ? st.authBg : null;
+  }
+  function syncAuthBgFromTeam() {
+    const tb = teamAuthBg();
+    if (!tb) return;
+    const cur = readAuthBg();
+    if (cur && cur.teamKey && cur.teamKey === tb.key) return;
+    writeAuthBg({ src: tb.src, blur: tb.blur, dim: tb.dim, teamKey: tb.key });
+  }
+  async function pushAuthBgToTeam(bg) {
+    if (!isCap()) { toast("Только капитан может менять фон для всех", "warn"); return false; }
+    const st = authBgState();
+    const payload = {
+      src: bg.src || st.src,
+      blur: bg.blur != null ? bg.blur : st.blur,
+      dim: bg.dim != null ? bg.dim : st.dim,
+      key: uid("bg"),
+    };
+    saveState("saving");
+    try {
+      const small = await shrinkDataUrl(payload.src, 1200, 0.66);
+      payload.src = small;
+      DB.team = await DB.adapter.updateTeam(DB.team.id, { settings: { authBg: payload } });
+      DB.persistSession();
+      await DB.log("обновил фото на входе команды", null);
+      writeAuthBg({ src: payload.src, blur: payload.blur, dim: payload.dim, teamKey: payload.key });
+      saveState("saved");
+      toast("Фото отправлено всей команде", "ok");
+      return true;
+    } catch (e) {
+      saveState("");
+      toast((e && e.message) || "Не сохранилось в облако", "warn");
+      return false;
+    }
+  }
+
+  /** Шторка настроек фона входа — доступна и до входа в команду. */
+  function sheetAuthBg() {
+    const st = authBgState();
+    openSheet("Фото на входе",
+      '<div class="bgprev"><img src="' + esc(st.src) + '" alt="Фон входа"></div>' +
+      '<label class="field"><span>Размытие фона · <b id="abBlurV">' + st.blur + "</b> px</span>" +
+      '<input id="abBlur" type="range" min="0" max="24" step="1" value="' + st.blur + '"></label>' +
+      '<label class="field"><span>Затемнение · <b id="abDimV">' + st.dim + "</b>%</span>" +
+      '<input id="abDim" type="range" min="0" max="92" step="1" value="' + st.dim + '"></label>' +
+      '<p class="muted tiny">Фото — главное на экране входа: форма стоит поверх него в затемнённом стекле. ' +
+      "На телефоне фон чуть смещается вместе с наклоном, на компьютере — за курсором.</p>" +
+      '<div class="btnrow"><button class="btn ghost tiny" data-abpick type="button">Выбрать своё фото…</button>' +
+      '<button class="btn ghost tiny" data-abdef type="button">Стандартное</button></div>' +
+      (DB.team ? '<p class="muted tiny">' + (teamAuthBg() ? "Сейчас используется общее фото команды." : "Общего фото команды нет — фон только на этом устройстве.") + "</p>" : ""),
+      '<button class="btn ghost" data-x type="button">Закрыть</button>' +
+      (DB.team && isCap() ? '<button class="btn" data-abteam type="button">Сохранить для всей команды</button>' : ""));
+    $("[data-x]", $("#sheetRoot")).onclick = closeSheet;
+    const blur = $("#abBlur"), dim = $("#abDim");
+    const live = () => {
+      writeAuthBg({ blur: +blur.value, dim: +dim.value });
+      $("#abBlurV").textContent = blur.value;
+      $("#abDimV").textContent = dim.value;
+    };
+    if (blur) blur.oninput = live;
+    if (dim) dim.oninput = live;
+    $("[data-abpick]", $("#sheetRoot")).onclick = () => {
+      pickAuthBg({
+        onUrl: async (url) => {
+          const cur = authBgState();
+          const ok = writeAuthBg({ src: url, blur: cur.blur, dim: cur.dim, teamKey: "" });
+          closeSheet();
+          sheetAuthBg();
+          toast(ok ? "Фото поставлено на этот экран" : "Фото поставлено, но в память не влезло — возьмите файл меньше", ok ? "ok" : "warn");
+        },
+      });
+    };
+    $("[data-abdef]", $("#sheetRoot")).onclick = () => { resetAuthBg(); closeSheet(); sheetAuthBg(); toast("Вернул стандартное фото", "ok"); };
+    const teamBtn = $("[data-abteam]", $("#sheetRoot"));
+    if (teamBtn) teamBtn.onclick = async () => {
+      const ok = await pushAuthBgToTeam({});
+      if (ok) { closeSheet(); render(); }
+    };
+  }
+  /* ---------- /экран входа: фон ---------- */
 
   /* ---------- sheet (bottom sheet / dialog) ---------- */
   function openSheet(title, bodyHTML, footHTML) {
@@ -224,10 +466,13 @@
 
   function paintShell() {
     const logged = !!DB.team;
+    document.body.classList.toggle("auth-mode", !logged);
+    if (!logged) applyAuthScene();
     $("#topbar").hidden = !logged;
     $("#sidebar").hidden = !logged;
     $("#bottomNav").hidden = !logged;
     document.body.classList.toggle("captain", logged && isCap());
+    document.body.classList.toggle("board-full", !!S.boardBig);
     if (!logged) return;
     $("#brandTeam").textContent = DB.team.name;
     const badge = $("#roleBadge");
@@ -324,6 +569,8 @@
   function route() {
     closeSheet(); closeModal(); closeMenus(); closeViewer();
     S.boardSel = null;
+    S.boardFrom = null;
+    S.boardWait = null;
     const logged = !!DB.team;
     const p = parseHash();
     if (!logged) {
@@ -360,23 +607,51 @@
 
   /* ---------- auth: login ---------- */
   let authMode = "player";
+  const LAST_TEAM_KEY = "cs2pb.lastTeam";
+  function lastTeamName() {
+    return lsGet(LAST_TEAM_KEY) || "";
+  }
+  function rememberTeamName(name) {
+    try {
+      const v = String(name || "").trim().slice(0, 40);
+      if (v) lsSet(LAST_TEAM_KEY, v);
+    } catch (e) {}
+  }
+  function authHeadHTML() {
+    return '<div class="authhead"><span class="authmark">CS2</span><span class="authhead-txt">' +
+      "<b>TEAM PLAYBOOK</b><small>Тактики, роли, раскидки — один вход на всю команду</small></span></div>";
+  }
+  function authFootHTML() {
+    return '<div class="authfoot"><button class="linklike" data-authbgbtn type="button">🖼 Фото на входе</button></div>';
+  }
+  function wireAuthFoot() {
+    const btn = $("[data-authbgbtn]");
+    if (btn) btn.onclick = (e) => { e.preventDefault(); sheetAuthBg(); };
+  }
   function viewLogin() {
     const view = $("#view");
+    const last = lastTeamName();
     view.innerHTML =
-      '<div class="authwrap"><div class="authcard"><p class="autheye">CS2 TEAM PLAYBOOK</p><h1>Вход команды</h1>' +
+      '<div class="authwrap">' + authHeadHTML() +
+      '<div class="authcard"><p class="autheye">CS2 TEAM PLAYBOOK</p><h1>Вход команды</h1>' +
       '<p class="sub">Название команды и PIN — больше ничего не нужно.</p>' +
       '<div class="authtabs"><button class="authtab' + (authMode === "player" ? " on" : "") + '" data-m="player" type="button">Игрок</button>' +
       '<button class="authtab' + (authMode === "captain" ? " on" : "") + '" data-m="captain" type="button">Капитан</button></div>' +
       '<form id="loginForm"><label class="field"><span>Название команды</span>' +
-      '<input id="liName" maxlength="40" autocomplete="off" placeholder="Например, БРАТЫ" required></label>' +
+      '<input id="liName" maxlength="40" autocomplete="off" placeholder="Например, БРАТЫ" value="' + esc(last) + '" required></label>' +
       '<label class="field"><span>' + (authMode === "player" ? "PIN команды" : "PIN капитана") + "</span>" +
       '<input id="liPin" type="password" inputmode="numeric" maxlength="32" autocomplete="off" placeholder="••••••" required></label>' +
       '<div class="form-error" id="liErr"></div>' +
       '<div class="btnrow"><button class="btn block" type="submit">Войти</button></div></form>' +
       '<div class="authlinks"><button class="linklike" id="goCreate" type="button">Нет команды? Создать команду</button></div>' +
-      "</div></div>";
+      (last ? '<div class="authquick"><span class="muted tiny">Вход с этого устройства:</span> ' +
+        '<button class="chip mini" id="authQuick" type="button">' + esc(last) + "</button></div>" : "") +
+      "</div>" + authFootHTML() + "</div>";
     $$(".authtab").forEach((b) => { b.onclick = () => { authMode = b.dataset.m; viewLogin(); }; });
     $("#goCreate").onclick = () => go("#/create");
+    const quick = $("#authQuick");
+    if (quick) quick.onclick = () => { const i = $("#liName"); i.value = last; i.focus(); $("#liPin").focus(); };
+    wireAuthFoot();
     $("#loginForm").onsubmit = async (e) => {
       e.preventDefault();
       const name = $("#liName").value, pin = $("#liPin").value;
@@ -391,6 +666,7 @@
           // иначе ищем команду и вызываем claimCaptain после временного входа.
           await captainDirectLogin(name, pin);
         }
+        rememberTeamName(name);
         afterEnter();
       } catch (err) {
         errBox.textContent = (err && err.code === "ASK_TEAM_PIN")
@@ -398,7 +674,10 @@
           : ((err && err.message) || "Не получилось войти");
       }
     };
-    setTimeout(() => { const i = $("#liName"); if (i) i.focus(); }, 50);
+    setTimeout(() => {
+      const i = last ? $("#liPin") : $("#liName");
+      if (i) i.focus();
+    }, 50);
   }
 
   async function captainDirectLogin(name, pin) {
@@ -444,6 +723,7 @@
   }
 
   function afterEnter() {
+    syncAuthBgFromTeam();
     if (!DB.myPlayerId() && DB.cache.players.length) go("#/who");
     else go("#/overview");
     if (S.askCaptainPin) {
@@ -478,7 +758,8 @@
   function viewCreate() {
     const view = $("#view");
     view.innerHTML =
-      '<div class="authwrap"><div class="authcard"><p class="autheye">CS2 TEAM PLAYBOOK</p><h1>Новая команда</h1>' +
+      '<div class="authwrap">' + authHeadHTML() +
+      '<div class="authcard"><p class="autheye">CS2 TEAM PLAYBOOK</p><h1>Новая команда</h1>' +
       '<p class="sub">Капитан создаёт команду один раз и отправляет игрокам PIN.</p>' +
       '<form id="crForm"><label class="field"><span>Название команды</span>' +
       '<input id="crName" maxlength="40" autocomplete="off" placeholder="Например, БРАТЫ" required></label>' +
@@ -491,19 +772,23 @@
       '<div class="form-error" id="crErr"></div>' +
       '<div class="btnrow"><button class="btn block" type="submit">Создать команду</button></div></form>' +
       '<div class="authlinks"><button class="linklike" id="goLogin" type="button">Уже есть команда? Войти</button></div>' +
-      "</div></div>";
+      "</div>" + authFootHTML() + "</div>";
     $("#goLogin").onclick = () => go("#/login");
+    wireAuthFoot();
     $("#crForm").onsubmit = async (e) => {
       e.preventDefault();
       const errBox = $("#crErr");
       errBox.textContent = "";
       const pin = $("#crPin").value, capPin = $("#crCapPin").value;
       if (pin === capPin) { errBox.textContent = "PIN команды и PIN капитана должны различаться"; return; }
+      // Имена читаем до await: DB.createTeam перерисовывает экран, и полей уже не будет.
+      const teamName = $("#crName").value, capName = $("#crCap").value;
       try {
         await DB.createTeam(
-          { name: $("#crName").value, pin, captain: $("#crCap").value, captainPin: capPin },
+          { name: teamName, pin, captain: capName, captainPin: capPin },
           (teamId) => Seed.seedTeam(teamId)
         );
+        rememberTeamName(teamName);
         viewCreated(pin);
       } catch (err) { errBox.textContent = (err && err.message) || "Не получилось создать"; }
     };
@@ -939,9 +1224,10 @@
 
   /* ---------- tactic detail ---------- */
   const BLOCK_NAMES = { roster: "Состав", tasks: "Задачи", grenades: "Гранаты", board: "Схема", image: "Изображения", video: "Видео", note: "Заметки" };
-  const NADE_ICON = { smoke: "💨", molly: "🔥", flash: "⚡" };
+  const NADE_ICON = { smoke: "💨", molly: "🔥", flash: "⚡", he: "💥", decoy: "🎯" };
   const NADE_NAME = { smoke: "Смouk", molly: "Молотов", flash: "Флешка" };
-  function nadeName(k) { return k === "smoke" ? "Смоук" : k === "molly" ? "Молотов" : k === "flash" ? "Флешка" : "Граната"; }
+  const NADE_NAMES = { smoke: "Смоук", molly: "Молотов", flash: "Флешка", he: "Хешка", decoy: "Обманка" };
+  function nadeName(k) { return NADE_NAMES[k] || "Граната"; }
 
   function viewTactic(id) {
     const t = tacticById(id);
@@ -1203,7 +1489,7 @@
       h += fld("Примечание", '<input ' + d + ' data-k="note" maxlength="140" value="' + esc(it.note || "") + '">');
     } else if (b.type === "grenades") {
       h += '<div class="field-row">' +
-        fld("Тип", '<select ' + d + ' data-k="kind">' + ["smoke", "molly", "flash"].map((k) => '<option value="' + k + '"' + (it.kind === k ? " selected" : "") + ">" + nadeName(k) + "</option>").join("") + "</select>") +
+        fld("Тип", '<select ' + d + ' data-k="kind">' + ["smoke", "molly", "flash", "he", "decoy"].map((k) => '<option value="' + k + '"' + (it.kind === k ? " selected" : "") + ">" + NADE_ICON[k] + " " + nadeName(k) + "</option>").join("") + "</select>") +
         fld("Название", '<input ' + d + ' data-k="name" maxlength="60" value="' + esc(it.name || "") + '" placeholder="Smoke CT">') + "</div>";
       h += fld("Кидает", '<select ' + d + ' data-k="by">' + playerOptions(it.by) + "</select>");
       h += '<div class="field-row">' + fld("Откуда", '<input ' + d + ' data-k="from" maxlength="40" value="' + esc(it.from || "") + '">') +
@@ -1299,202 +1585,1054 @@
   }
 
   /* ---------- board block (схема) ---------- */
-  const BOARD_COLORS = ["#e8a72f", "#ef5d5d", "#5da9ff", "#48cf8b", "#b984ff", "#f2f4f7"];
-  const safeColor = (c) => (/^#[0-9a-f]{6}$/i.test(String(c || "")) ? c : BOARD_COLORS[0]);
+  const BOARD_COLORS = [
+    { c: "#e8a72f", n: "жёлтый" }, { c: "#ef5d5d", n: "красный" },
+    { c: "#5da9ff", n: "синий" }, { c: "#48cf8b", n: "зелёный" },
+    { c: "#b984ff", n: "фиолет" }, { c: "#f2f4f7", n: "белый" },
+    { c: "#ff8ac2", n: "розовый" }, { c: "#8e9aa8", n: "серый" },
+  ];
+  const STROKE_PX = { 1: 1.9, 2: 3.2, 3: 5.2 };
+  const BOARD_WIDTHS = [{ w: 1, n: "Тонко" }, { w: 2, n: "Средне" }, { w: 3, n: "Жирно" }];
+  const strokePx = (w) => STROKE_PX[w] || STROKE_PX[2];
+  const BOARD_TOOLS = [
+    { id: "select", icon: "☝", n: "Выбор", key: "V" },
+    { id: "arrow", icon: "➜", n: "Движение", key: "A" },
+    { id: "line", icon: "╱", n: "Линия", key: "L" },
+    { id: "pen", icon: "✎", n: "Каракули", key: "P" },
+    { id: "zone", icon: "◯", n: "Зона", key: "Z" },
+    { id: "player", icon: "①", n: "Игрок", key: "1" },
+    { id: "number", icon: "№", n: "Номер", key: "N" },
+    { id: "text", icon: "T", n: "Текст", key: "X" },
+    { id: "nade", icon: "💣", n: "Граната", key: "G" },
+    { id: "eraser", icon: "⌫", n: "Ластик", key: "E" },
+  ];
+  const NADE_KINDS = [
+    { k: "smoke", i: "💨", n: "Смоук" }, { k: "molly", i: "🔥", n: "Молотов" },
+    { k: "flash", i: "⚡", n: "Флеш" }, { k: "he", i: "💥", n: "Хешка" },
+    { k: "decoy", i: "🎯", n: "Обманка" },
+  ];
+  const nadeMeta = (k) => NADE_KINDS.filter((x) => x.k === k)[0] || { k: k, i: "💣", n: "Граната" };
+  const safeColor = (c) => (/^#[0-9a-f]{6}$/i.test(String(c || "")) ? c : BOARD_COLORS[0].c);
+  const clamp100 = (v) => Math.max(0, Math.min(100, v));
+  const r1 = (v) => Math.round(v * 10) / 10;
 
   function boardBg(t, b) {
     if (b.bg) return b.bg;
     const m = mapById(t.map_id);
     return m ? m.image : "";
   }
+
+  /* --- geometry helpers --- */
+  function bendPoint(d) {
+    const mx = (d.x1 + d.x2) / 2, my = (d.y1 + d.y2) / 2;
+    if (!d.bend) return { x: mx, y: my };
+    const dx = d.x2 - d.x1, dy = d.y2 - d.y1;
+    const len = Math.sqrt(dx * dx + dy * dy) || 1;
+    return { x: mx - (dy / len) * d.bend, y: my + (dx / len) * d.bend };
+  }
+  function arrowPathD(d) {
+    if (!d.bend) return "M" + d.x1 + " " + d.y1 + " L" + d.x2 + " " + d.y2;
+    const c = bendPoint(d);
+    return "M" + d.x1 + " " + d.y1 + " Q" + r1(c.x) + " " + r1(c.y) + " " + d.x2 + " " + d.y2;
+  }
+  function triPath(x, y, ax, ay, size) {
+    const a = Math.atan2(y - ay, x - ax);
+    const spread = 0.42;
+    const p1x = x - size * Math.cos(a - spread), p1y = y - size * Math.sin(a - spread);
+    const p2x = x - size * Math.cos(a + spread), p2y = y - size * Math.sin(a + spread);
+    return "M" + r1(x) + " " + r1(y) + " L" + r1(p1x) + " " + r1(p1y) + " L" + r1(p2x) + " " + r1(p2y) + " Z";
+  }
+  function headSize(d) { return 2.6 + strokePx(d.w) * 0.75; }
+  function dashAttr(d) {
+    if (!d.dash) return "";
+    const s = strokePx(d.w);
+    return ' stroke-dasharray="' + r1(s * 2.2 + 2) + " " + r1(s * 1.5 + 1.4) + '"';
+  }
+  /** Снап конца стрелки к ближнему игроку — чтобы маршрут ехал вместе с токеном. */
+  function anchorNear(b, x, y) {
+    let best = null, bd = 5.4;
+    (b.markers || []).forEach((mk) => {
+      if (mk.kind !== "player") return;
+      const dd = Math.sqrt((mk.x - x) * (mk.x - x) + (mk.y - y) * (mk.y - y));
+      if (dd < bd) { bd = dd; best = mk; }
+    });
+    return best;
+  }
+  function attachAnchors(b, d) {
+    if (d.type !== "arrow" && d.type !== "line") return;
+    const a1 = anchorNear(b, d.x1, d.y1), a2 = anchorNear(b, d.x2, d.y2);
+    d.a1 = a1 ? a1.id : null;
+    d.a2 = a2 ? a2.id : null;
+  }
+  function followAnchors(b, mkId) {
+    (b.drawings || []).forEach((d) => {
+      if (d.type !== "arrow" && d.type !== "line") return;
+      if (d.a1 === mkId) { d.x1 = r1(mkById(b, mkId).x); d.y1 = r1(mkById(b, mkId).y); }
+      if (d.a2 === mkId) { d.x2 = r1(mkById(b, mkId).x); d.y2 = r1(mkById(b, mkId).y); }
+    });
+  }
+  function mkById(b, id) { return (b.markers || []).filter((x) => x.id === id)[0] || { x: 50, y: 50 }; }
+
+  /* --- rendering --- */
   function boardHTML(t, b) {
-    const bg = boardBg(t, b);
-    let h = '<div class="boardwrap" data-board="' + b.id + '"><div class="map-canvas">';
-    if (bg) h += '<img class="map-photo" src="' + esc(bg) + '" alt="" draggable="false">';
-    else h += '<div class="empty">Нет фона карты.</div>';
-    h += boardSVG(b, isCap()) + "</div>";
-    if (isCap()) {
-      h += '<div class="boardbar">' + boardToolsHTML(b) + "</div>";
-    } else {
-      h += '<div class="boardbar"><button class="toolbtn" data-bzoom type="button">⤢ Развернуть</button></div>';
-    }
+    const big = S.boardBig === b.id;
+    let h = '<div class="boardwrap board' + (big ? " big" : "") + (isCap() ? " editable" : "") +
+      (S.boardGrid ? " grid" : "") + '" data-board="' + b.id + '" tabindex="0">' +
+      '<div class="board-inner">';
+    h += '<div class="map-canvas">' + boardCanvasHTML(t, b) + "</div>";
+    h += '<div class="boardbar">' + boardBarHTML(t, b) + "</div>";
+    h += "</div>";
+    if (big) h += '<button class="iconbtn board-close" data-bclose type="button" title="Закрыть (Esc)">✕</button>';
     return h + "</div>";
   }
-  function boardToolsHTML(b) {
-    const tools = [["select", "Выбор"], ["arrow", "→"], ["line", "—"], ["pen", "✎"], ["number", "①"], ["text", "T"]];
-    let h = tools.map((x) => '<button class="toolbtn' + (S.boardTool === x[0] ? " on" : "") + '" data-tool="' + x[0] + '" type="button">' + x[1] + "</button>").join("");
-    h += BOARD_COLORS.map((c) => '<button class="swatch' + (S.boardColor === c ? " on" : "") + '" data-color="' + c + '" style="--sw:' + c + '" type="button"></button>').join("");
-    h += '<button class="toolbtn" data-addmarker type="button">+ Маркер</button>';
-    h += '<button class="toolbtn" data-mstyle type="button">' + (b.markerStyle === "nick" ? "Ники" : "Номера") + "</button>";
-    h += '<button class="toolbtn" data-bundo type="button">↩</button>';
-    h += '<button class="toolbtn" data-bdel type="button">🗑</button>';
-    h += '<button class="toolbtn" data-bzoom type="button">⤢</button>';
+  function boardCanvasHTML(t, b) {
+    const bg = boardBg(t, b);
+    let h = "";
+    if (bg) h += '<img class="map-photo" src="' + esc(bg) + '" alt="" draggable="false">';
+    else h += '<div class="empty">Нет фона карты.</div>';
+    h += boardSVG(b, isCap());
     return h;
+  }
+  function boardCount(b) {
+    return (b.drawings || []).length + (b.markers || []).filter((m) => m.kind === "player").length;
+  }
+  function boardBarHTML(t, b) {
+    if (!isCap()) {
+      return '<div class="board-row"><span class="board-hint">Схема · ' + boardCount(b) + " эл.</span>" +
+        '<span class="board-spacer"></span><button class="toolbtn" data-bzoom type="button">' +
+        (S.boardBig === b.id ? "⤡ Свернуть" : "⤢ Открыть") + "</button></div>";
+    }
+    let h = '<div class="board-row board-tools" role="toolbar">';
+    BOARD_TOOLS.forEach((x) => {
+      h += '<button class="toolbtn tool' + (S.boardTool === x.id ? " on" : "") + '" data-tool="' + x.id +
+        '" type="button" title="' + esc(x.n) + " (" + x.key + ')"><span class="ti">' + x.icon + "</span>" +
+        '<span class="tl">' + esc(x.n) + "</span></button>";
+    });
+    h += "</div>";
+
+    h += '<div class="board-row board-style">';
+    h += '<span class="bgroup">';
+    BOARD_COLORS.forEach((x) => {
+      h += '<button class="swatch' + (S.boardColor === x.c ? " on" : "") + '" data-color="' + x.c +
+        '" style="--sw:' + x.c + '" type="button" title="' + esc(x.n) + '"></button>';
+    });
+    h += "</span>";
+    h += '<span class="bgroup">' + BOARD_WIDTHS.map((x) =>
+      '<button class="toolbtn sm' + (S.boardWidth === x.w ? " on" : "") + '" data-w="' + x.w +
+      '" type="button">' + esc(x.n) + "</button>").join("") + "</span>";
+    h += '<span class="bgroup">' +
+      '<button class="toolbtn sm' + (S.boardDash ? " on" : "") + '" data-tog="dash" type="button" title="Пунктир — для необязательных/теневых маршрутов">⌇ Пунктир</button>' +
+      '<button class="toolbtn sm' + (S.boardHead === "both" ? " on" : "") + '" data-tog="head" type="button" title="Наконечники с двух сторон — размен/обмен">⇄ Два конца</button>' +
+      '<button class="toolbtn sm' + (S.boardGrid ? " on" : "") + '" data-tog="grid" type="button" title="Сетка 5% + привязка к ней">▦ Сетка</button>' +
+      "</span>";
+    h += '<span class="bgroup">' +
+      '<button class="toolbtn sm" data-mstyle type="button" title="Как показывать игроков">🏷 ' +
+      (b.markerStyle === "nick" ? "Ники" : b.markerStyle === "both" ? "Ник+№" : "Номера") + "</button>" +
+      "</span>";
+    h += "</div>";
+
+    if (S.boardTool === "nade") {
+      h += '<div class="board-row board-sub">';
+      NADE_KINDS.forEach((x) => {
+        h += '<button class="toolbtn sm' + (S.boardNade === x.k ? " on" : "") + '" data-nade="' + x.k +
+          '" type="button">' + x.i + " " + esc(x.n) + "</button>";
+      });
+      h += "</div>";
+    }
+    if (S.boardSel) {
+      h += '<div class="board-row board-sub">' +
+        '<button class="toolbtn sm" data-beditel type="button">✎ Подпись</button>' +
+        '<button class="toolbtn sm" data-bdupel type="button">⧉ Дубликат</button>' +
+        '<button class="toolbtn sm" data-bline type="button">➜ Стрелка отсюда</button>' +
+        '<button class="toolbtn sm" data-bdel type="button">🗑 Удалить</button>' +
+        "</div>";
+    }
+    if (S.boardWait === b.id) {
+      h += '<div class="board-row board-sub warn"><b>Тапните точку</b> — туда пойдут стрелки от всех игроков</div>';
+    }
+    h += '<div class="board-row board-acts">' +
+      '<button class="toolbtn sm" data-bundo type="button"' + (histLen(b, "u") ? "" : " disabled") + ">↩ Отменить" +
+      (histLen(b, "u") ? " (" + histLen(b, "u") + ")" : "") + "</button>" +
+      '<button class="toolbtn sm" data-bredo type="button"' + (histLen(b, "r") ? "" : " disabled") + ">↪ Вернуть</button>" +
+      '<span class="board-spacer"></span>' +
+      '<button class="toolbtn sm" data-bplace type="button" title="Разложить состав по спауну стороны">🚩 Расставить 1–5</button>' +
+      '<button class="toolbtn sm" data-bfan type="button" title="Стрелки от каждого игрока в одну точку">➜ Стрелки к точке</button>' +
+      '<button class="toolbtn sm" data-bclear type="button">🗑 Очистить</button>' +
+      '<button class="toolbtn sm" data-bzoom type="button">' + (S.boardBig === b.id ? "⤡ Свернуть" : "⤢ Во весь экран") + "</button>" +
+      "</div>";
+    return h;
+  }
+  function histLen(b, kind) {
+    const h = S.boardHist && S.boardHist[b.id];
+    return h ? h[kind].length : 0;
   }
   function boardSVG(b, editable) {
     const sel = S.boardSel;
-    let defs = "", body = "";
-    (b.drawings || []).forEach((d, i) => {
-      if (d.type !== "arrow") return;
-      defs += '<marker id="ba-' + b.id + "-" + i + '" viewBox="0 0 10 10" refX="8.2" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="' + safeColor(d.color) + '"/></marker>';
-    });
-    body += '<rect class="map-hit-area" width="100" height="100" fill="transparent"/>';
-    (b.drawings || []).forEach((d, i) => {
-      const c = safeColor(d.color);
-      const selected = sel && sel.id === d.id ? " selected" : "";
-      if (d.type === "arrow" || d.type === "line") {
-        const mk = d.type === "arrow" ? ' marker-end="url(#ba-' + b.id + "-" + i + ')"' : "";
-        const co = ' x1="' + d.x1 + '" y1="' + d.y1 + '" x2="' + d.x2 + '" y2="' + d.y2 + '"';
-        body += '<g class="draw-item' + selected + '" data-draw="' + d.id + '"><line class="move-line hit"' + co + '/><line class="move-line visible" stroke="' + c + '"' + co + mk + '/><line class="selection-ring"' + co + "/></g>";
-      } else if (d.type === "pen") {
-        const pts = (d.points || []).map((p) => p[0] + "," + p[1]).join(" ");
-        body += '<g class="draw-item' + selected + '" data-draw="' + d.id + '"><polyline class="move-line hit" points="' + pts + '"/><polyline class="move-line visible" stroke="' + c + '" points="' + pts + '"/><polyline class="selection-ring" points="' + pts + '"/></g>';
-      } else if (d.type === "number") {
-        body += '<g class="draw-item draw-marker' + selected + '" data-draw="' + d.id + '" transform="translate(' + d.x + "," + d.y + ')"><circle class="tactic-number-bg" r="3.25" stroke="' + c + '"/><circle class="selection-ring" r="4.2"/><text class="tactic-number-text" y=".15" fill="' + c + '">' + esc(String(d.text || "1").slice(0, 3)) + "</text></g>";
-      } else {
-        const label = String(d.text || "?").slice(0, 24);
-        const w = Math.min(48, Math.max(12, label.length * 1.9 + 5));
-        body += '<g class="draw-item draw-marker' + selected + '" data-draw="' + d.id + '" transform="translate(' + d.x + "," + d.y + ')"><rect class="tactic-label-bg" x="' + (-w / 2) + '" y="-2.65" width="' + w + '" height="5.3" rx="1" stroke="' + c + '"/><rect class="selection-ring" x="' + (-w / 2 - 1) + '" y="-3.65" width="' + (w + 2) + '" height="7.3" rx="1"/><text class="tactic-label" y=".1" fill="' + c + '">' + esc(label) + "</text></g>";
-      }
+    let body = '<rect class="map-hit-area" width="100" height="100" fill="transparent"/>';
+    (b.drawings || []).forEach((d) => {
+      body += drawItemHTML(b, d, !!(sel && sel.id === d.id), editable);
     });
     (b.markers || []).forEach((mk) => {
-      body += markerSVG(b, mk, sel && sel.id === mk.id);
+      body += markerSVG(b, mk, !!(sel && sel.id === mk.id), editable);
     });
-    return '<svg class="tactical-map' + (editable ? " editing" : "") + '" viewBox="0 0 100 100" data-svg="' + b.id + '"><defs>' + defs + "</defs>" + body + "</svg>";
+    return '<svg class="tactical-map' + (editable ? " editing" : "") + '" viewBox="0 0 100 100" preserveAspectRatio="none" data-svg="' +
+      b.id + '">' + body + "</svg>";
   }
-  function markerSVG(b, mk, selected) {
+  function drawItemHTML(b, d, selected, editable) {
+    const c = safeColor(d.color);
+    const sw = strokePx(d.w);
+    const cls = "draw-item" + (selected ? " selected" : "");
+    if (d.type === "arrow" || d.type === "line") {
+      const p = arrowPathD(d);
+      let heads = "";
+      if (d.type === "arrow") {
+        heads = '<path class="ahead" fill="' + c + '" d="' + triPath(d.x2, d.y2, bendPoint(d).x, bendPoint(d).y, headSize(d)) + '"/>';
+        if (d.head === "both") {
+          heads += '<path class="ahead" fill="' + c + '" d="' + triPath(d.x1, d.y1, bendPoint(d).x, bendPoint(d).y, headSize(d)) + '"/>';
+        }
+      }
+      return '<g class="' + cls + '" data-draw="' + d.id + '">' +
+        '<path class="shape hit" d="' + p + '"/>' +
+        '<path class="shape vis" stroke="' + c + '" stroke-width="' + sw + '"' + dashAttr(d) + ' d="' + p + '"/>' +
+        heads +
+        '<path class="shape halo" d="' + p + '"/>' +
+        (selected && editable ? handleHTML(d) : "") +
+        "</g>";
+    }
+    if (d.type === "pen") {
+      const pts = (d.points || []).map((p) => p[0] + "," + p[1]).join(" ");
+      return '<g class="' + cls + '" data-draw="' + d.id + '">' +
+        '<polyline class="shape hit" points="' + pts + '"/>' +
+        '<polyline class="shape vis" stroke="' + c + '" stroke-width="' + sw + '"' + dashAttr(d) + ' points="' + pts + '"/>' +
+        '<polyline class="shape halo" points="' + pts + '"/>' +
+        "</g>";
+    }
+    if (d.type === "zone") {
+      return '<g class="' + cls + ' zone-item" data-draw="' + d.id + '">' +
+        '<ellipse class="zone-hit" cx="' + d.x + '" cy="' + d.y + '" rx="' + d.rx + '" ry="' + d.ry + '"/>' +
+        '<ellipse class="zone-vis" fill="' + c + '" stroke="' + c + '" cx="' + d.x + '" cy="' + d.y + '" rx="' + d.rx + '" ry="' + d.ry + '"/>' +
+        '<ellipse class="zone-halo" cx="' + d.x + '" cy="' + d.y + '" rx="' + d.rx + '" ry="' + d.ry + '"/>' +
+        (selected && editable ? '<circle class="bhandle" data-handle="rx" cx="' + r1(d.x + d.rx) + '" cy="' + d.y + '" r="2.4"/>' +
+          '<circle class="bhandle" data-handle="ry" cx="' + d.x + '" cy="' + r1(d.y + d.ry) + '" r="2.4"/>' : "") +
+        "</g>";
+    }
+    if (d.type === "nade") {
+      const meta = nadeMeta(d.kind);
+      const auto = d.kind === "smoke" ? "#9aa4b0" : d.kind === "molly" ? "#ef5d5d" : d.kind === "flash" ? "#e8c56a" : d.kind === "he" ? "#ff9d5c" : "#d8dee6";
+      const nc = /^#[0-9a-f]{6}$/i.test(String(d.color || "")) ? d.color : auto;
+      const label = String(d.label || "").slice(0, 3);
+      return '<g class="' + cls + ' draw-marker nade-item" data-draw="' + d.id + '" transform="translate(' + d.x + "," + d.y + ')">' +
+        '<circle class="chip-hit" r="4.9"/>' +
+        '<circle class="tactic-number-bg" r="3.4" stroke="' + nc + '"/>' +
+        '<text class="tactic-number-text" y=".15" fill="' + nc + '" style="font-size:3.5px">' + meta.i + "</text>" +
+        (label ? '<text class="nade-idx" y="6.3" fill="' + nc + '">' + esc(label) + "</text>" : "") +
+        '<circle class="selection-ring" r="4.5"/>' + "</g>";
+    }
+    if (d.type === "number") {
+      const size = 2.85 + strokePx(d.w) * 0.4;
+      return '<g class="' + cls + ' draw-marker" data-draw="' + d.id + '" transform="translate(' + d.x + "," + d.y + ')">' +
+        '<circle class="chip-hit" r="' + (size + 1.4) + '"/>' +
+        '<circle class="tactic-number-bg" r="' + size + '" stroke="' + c + '"/>' +
+        '<text class="tactic-number-text" y=".15" fill="' + c + '" style="font-size:' + r1(size * 1.28) + 'px">' + esc(String(d.text || "1").slice(0, 3)) + "</text>" +
+        '<circle class="selection-ring" r="' + (size + 1.1) + '"/>' +
+        "</g>";
+    }
+    // text / label
+    const label = String(d.text || "?").slice(0, 26);
+    const size = 2.5 + strokePx(d.w) * 0.36;
+    const w = Math.min(60, Math.max(11, label.length * (size * 0.58) + 5));
+    return '<g class="' + cls + ' draw-marker" data-draw="' + d.id + '" transform="translate(' + d.x + "," + d.y + ')">' +
+      '<rect class="chip-hit" x="' + (-w / 2 - 1) + '" y="-3.2" width="' + (w + 2) + '" height="6.4"/>' +
+      '<rect class="tactic-label-bg" x="' + (-w / 2) + '" y="' + (-size * 0.83) + '" width="' + w + '" height="' + r1(size * 1.66) +
+      '" rx="1" stroke="' + c + '"/>' +
+      '<text class="tactic-label" y=".1" fill="' + c + '" style="font-size:' + size + 'px">' + esc(label) + "</text>" +
+      '<rect class="selection-ring" x="' + (-w / 2 - 1.1) + '" y="' + (-size * 0.83 - 1) + '" width="' + (w + 2.2) + '" height="' + r1(size * 1.66 + 2) + '" rx="1.2"/>' +
+      "</g>";
+  }
+  function handleHTML(d) {
+    return '<circle class="bhandle" data-handle="1" cx="' + d.x1 + '" cy="' + d.y1 + '" r="2.4"/>' +
+      '<circle class="bhandle" data-handle="2" cx="' + d.x2 + '" cy="' + d.y2 + '" r="2.4"/>' +
+      '<circle class="bhandle bend" data-handle="b" cx="' + r1(bendPoint(d).x) + '" cy="' + r1(bendPoint(d).y) + '" r="2"/>';
+  }
+  function markerSVG(b, mk, selected, editable) {
     const sel = selected ? " selected" : "";
     if (mk.kind === "player") {
       const p = playerById(mk.playerId);
       const color = safeColor((p && p.color) || mk.color);
       const idx = p ? DB.cache.players.indexOf(p) + 1 : "?";
+      const style = b.markerStyle || "number";
+      const nick = p ? String(p.name).slice(0, 14) : "?";
       let inner = "";
-      if ((b.markerStyle || "number") === "nick" && p) {
-        const nick = String(p.name).slice(0, 14);
+      if (style === "nick") {
         const w = Math.min(34, Math.max(12, nick.length * 1.75 + 5));
-        inner = '<rect class="player-tag" x="' + (-w / 2) + '" y="-2.7" width="' + w + '" height="5.4" rx="1" stroke="' + color + '"/><text class="player-nick" y=".1" fill="' + color + '">' + esc(nick) + "</text>";
+        inner = '<rect class="player-tag" x="' + (-w / 2) + '" y="-2.7" width="' + w + '" height="5.4" rx="1" stroke="' + color + '"/>' +
+          '<text class="player-nick" y=".1" fill="' + color + '">' + esc(nick) + "</text>";
       } else {
-        inner = '<circle r="3.25" stroke="' + color + '"/><text class="player-num" y=".1" fill="' + color + '">' + idx + "</text>";
+        inner = '<circle class="pmk-dot" r="3.25" stroke="' + color + '"/>' +
+          '<text class="player-num" y=".1" fill="' + color + '">' + idx + "</text>" +
+          (style === "both" ? '<text class="player-sub" y="5.6" fill="' + color + '">' + esc(nick.slice(0, 10)) + "</text>" : "");
       }
-      return '<g class="pmk draw-item' + sel + '" data-marker="' + mk.id + '" transform="translate(' + mk.x + "," + mk.y + ')">' + inner + '<circle class="selection-ring" r="4.4"/></g>';
+      return '<g class="pmk draw-item' + sel + '" data-marker="' + mk.id + '" transform="translate(' + mk.x + "," + mk.y + ')">' +
+        '<circle class="chip-hit" r="5"/>' + inner + '<circle class="selection-ring" r="4.6"/>' + "</g>";
     }
-    if (mk.kind === "smoke" || mk.kind === "molly" || mk.kind === "flash") {
-      const c = mk.kind === "smoke" ? "#9aa4b0" : mk.kind === "molly" ? "#ef5d5d" : "#e8c56a";
-      const icon = NADE_ICON[mk.kind] || "?";
-      return '<g class="draw-item draw-marker' + sel + '" data-marker="' + mk.id + '" transform="translate(' + mk.x + "," + mk.y + ')"><circle class="tactic-number-bg" r="3.1" stroke="' + c + '"/><circle class="selection-ring" r="4.1"/><text class="tactic-number-text" y=".15" fill="' + c + '" style="font-size:3.4px">' + icon + "</text></g>";
+    if (mk.kind === "smoke" || mk.kind === "molly" || mk.kind === "flash" || mk.kind === "he" || mk.kind === "decoy") {
+      const meta = nadeMeta(mk.kind);
+      const c = mk.kind === "smoke" ? "#9aa4b0" : mk.kind === "molly" ? "#ef5d5d" : mk.kind === "flash" ? "#e8c56a" : "#d8dee6";
+      return '<g class="draw-item draw-marker' + sel + '" data-marker="' + mk.id + '" transform="translate(' + mk.x + "," + mk.y + ')">' +
+        '<circle class="chip-hit" r="4.6"/>' +
+        '<circle class="tactic-number-bg" r="3.1" stroke="' + c + '"/>' +
+        '<text class="tactic-number-text" y=".15" fill="' + c + '" style="font-size:3.4px">' + meta.i + "</text>" +
+        '<circle class="selection-ring" r="4.1"/>' + "</g>";
     }
     const label = String(mk.label || "?").slice(0, 18);
     const w = Math.min(40, Math.max(10, label.length * 1.8 + 5));
     const c = safeColor(mk.color);
-    return '<g class="draw-item draw-marker' + sel + '" data-marker="' + mk.id + '" transform="translate(' + mk.x + "," + mk.y + ')"><rect class="tactic-label-bg" x="' + (-w / 2) + '" y="-2.5" width="' + w + '" height="5" rx="1" stroke="' + c + '"/><rect class="selection-ring" x="' + (-w / 2 - 1) + '" y="-3.5" width="' + (w + 2) + '" height="7" rx="1"/><text class="tactic-label" y=".1" fill="' + c + '">' + esc(label) + "</text></g>";
+    return '<g class="draw-item draw-marker' + sel + '" data-marker="' + mk.id + '" transform="translate(' + mk.x + "," + mk.y + ')">' +
+      '<rect class="chip-hit" x="' + (-w / 2 - 1) + '" y="-3.4" width="' + (w + 2) + '" height="6.8"/>' +
+      '<rect class="tactic-label-bg" x="' + (-w / 2) + '" y="-2.5" width="' + w + '" height="5" rx="1" stroke="' + c + '"/>' +
+      '<text class="tactic-label" y=".1" fill="' + c + '">' + esc(label) + "</text>" +
+      '<rect class="selection-ring" x="' + (-w / 2 - 1.1) + '" y="-3.5" width="' + (w + 2.2) + '" height="7" rx="1.2"/>' + "</g>";
   }
 
+  /* --- repaint in place (без пересборки всей страницы) --- */
+  function repaintBoard(t, b) {
+    $$('[data-board="' + b.id + '"]').forEach((wrap) => {
+      const canvas = $(".map-canvas", wrap);
+      if (canvas) canvas.innerHTML = boardCanvasHTML(t, b);
+      const bar = $(".boardbar", wrap);
+      if (bar) { bar.innerHTML = boardBarHTML(t, b); wireBoardBar(wrap, t, b); }
+      const svg = $("[data-svg]", wrap);
+      if (svg) bindBoardSVG(svg, t, b);
+      if (document.activeElement === wrap) { try { wrap.focus({ preventScroll: true }); } catch (e) {} }
+    });
+  }
+
+  /* --- history + persistence --- */
+  function hist(b) {
+    if (!S.boardHist) S.boardHist = {};
+    if (!S.boardHist[b.id]) S.boardHist[b.id] = { u: [], r: [] };
+    return S.boardHist[b.id];
+  }
+  function boardSnapshot(b) {
+    return JSON.stringify({ markers: b.markers || [], drawings: b.drawings || [], markerStyle: b.markerStyle || "number" });
+  }
+  function pushHist(t, b) {
+    const h = hist(b);
+    h.u.push(boardSnapshot(b));
+    if (h.u.length > 30) h.u.shift();
+    h.r.length = 0;
+  }
+  function applySnapshot(b, snap) {
+    const v = JSON.parse(snap);
+    b.markers = v.markers || [];
+    b.drawings = v.drawings || [];
+    b.markerStyle = v.markerStyle;
+  }
+  function boardUndo(t, b) {
+    const h = hist(b);
+    if (!h.u.length) { toast("Отменять нечего"); return; }
+    h.r.push(boardSnapshot(b));
+    applySnapshot(b, h.u.pop());
+    S.boardSel = null;
+    boardCommit(t, b);
+  }
+  function boardRedo(t, b) {
+    const h = hist(b);
+    if (!h.r.length) { toast("Возвращать нечего"); return; }
+    h.u.push(boardSnapshot(b));
+    applySnapshot(b, h.r.pop());
+    S.boardSel = null;
+    boardCommit(t, b);
+  }
+  const boardSaveTimers = {};
+  /** Перерисовать доску на месте и отправить правки в базу (с сохранением 260 мс). */
+  function boardCommit(t, b) {
+    repaintBoard(t, b);
+    saveState("saving");
+    clearTimeout(boardSaveTimers[b.id]);
+    boardSaveTimers[b.id] = setTimeout(() => {
+      const blocks = clone(t.blocks || []);
+      const i = blocks.findIndex((x) => x.id === b.id);
+      if (i >= 0) blocks[i] = clone(b);
+      DB.save("tactics", { id: t.id, blocks }).then(() => saveState("saved")).catch((e) => {
+        saveState("");
+        toast((e && e.message) || "Не сохранилось", "warn");
+      });
+    }, 260);
+  }
+  /* --- операции --- */
+  function usedPlayerIds(b) {
+    return (b.markers || []).filter((m) => m.kind === "player").map((m) => m.playerId);
+  }
+  function nextFreePlayer(b) {
+    const used = usedPlayerIds(b);
+    const all = DB.cache.players.filter((p) => used.indexOf(p.id) < 0);
+    return all[0] || null;
+  }
+  function playerByIdOrder(p) { return DB.cache.players.indexOf(p) + 1; }
+
+  function spawnZoneFor(t) {
+    const m = mapById(t.map_id);
+    const base = window.TACTICS_BASE && window.TACTICS_BASE.maps;
+    if (!m || !base) return null;
+    let map = null;
+    Object.keys(base).forEach((k) => { if (base[k].name === m.name) map = base[k]; });
+    if (!map || !(map.zones || []).length) return null;
+    const kind = t.side === "CT" ? "ctspawn" : "tspawn";
+    return map.zones.filter((z) => z.kind === kind)[0] || map.zones[0] || null;
+  }
+  function boardAutoPlace(t, b) {
+    const players = DB.cache.players.slice(0, 5);
+    if (!players.length) { toast("Сначала добавьте игроков в состав", "warn"); return; }
+    const z = spawnZoneFor(t);
+    const n = players.length;
+    const pts = players.map((p, i) => {
+      if (z) {
+        const spread = Math.max(14, z.w || 16);
+        const step = n > 1 ? spread / (n - 1) : 0;
+        return { x: clamp100(z.x - spread / 2 + step * i), y: clamp100(z.y + (i % 2 ? 2.6 : -1.6)) };
+      }
+      const step = n > 1 ? 56 / (n - 1) : 0;
+      return { x: 22 + step * i, y: t.side === "CT" ? 24 : 76 };
+    });
+    pushHist(t, b);
+    b.markers = (b.markers || []).filter((m) => m.kind !== "player");
+    players.forEach((p, i) => {
+      b.markers.push({
+        id: uid("m"), kind: "player", playerId: p.id, label: "", color: p.color || "",
+        x: r1(pts[i].x), y: r1(pts[i].y), note: "",
+      });
+    });
+    boardCommit(t, b);
+    toast("Расставил " + n + " по " + (z ? "спауну" : "центру"), "ok");
+  }
+  function boardFanOut(t, b, pt) {
+    const marks = (b.markers || []).filter((m) => m.kind === "player");
+    if (!marks.length) { toast("Сначала расставьте игроков", "warn"); return false; }
+    pushHist(t, b);
+    b.drawings = b.drawings || [];
+    marks.forEach((mk) => {
+      const p = playerById(mk.playerId);
+      b.drawings.push({
+        id: uid("d"), type: "arrow", x1: r1(mk.x), y1: r1(mk.y), x2: r1(pt.x), y2: r1(pt.y),
+        bend: 0, color: safeColor(p && p.color || S.boardColor), w: S.boardWidth,
+        dash: S.boardDash, head: "end", a1: mk.id, a2: null,
+      });
+    });
+    boardCommit(t, b);
+    toast("Стрелки от " + marks.length + " игроков", "ok");
+    return true;
+  }
+  function boardDeleteSel(t, b) {
+    const sel = S.boardSel;
+    if (!sel) { toast("Сначала выберите элемент схемы"); return; }
+    pushHist(t, b);
+    b.drawings = (b.drawings || []).filter((x) => x.id !== sel.id);
+    b.markers = (b.markers || []).filter((x) => x.id !== sel.id);
+    (b.drawings || []).forEach((d) => {
+      if (d.a1 === sel.id) { d.a1 = null; }
+      if (d.a2 === sel.id) { d.a2 = null; }
+    });
+    S.boardSel = null;
+    boardCommit(t, b);
+  }
+  function boardDupSel(t, b) {
+    const sel = S.boardSel;
+    if (!sel) { toast("Сначала выберите элемент"); return; }
+    const d = (b.drawings || []).filter((x) => x.id === sel.id)[0];
+    if (!d) { toast("Дублировать можно только стрелки, линии, зоны и подписи", "warn"); return; }
+    pushHist(t, b);
+    const cp = clone(d);
+    cp.id = uid("d");
+    cp.x1 = d.x1 != null ? r1(clamp100(d.x1 + 5)) : cp.x1;
+    cp.y1 = d.y1 != null ? r1(clamp100(d.y1 + 5)) : cp.y1;
+    cp.x2 = d.x2 != null ? r1(clamp100(d.x2 + 5)) : cp.x2;
+    cp.y2 = d.y2 != null ? r1(clamp100(d.y2 + 5)) : cp.y2;
+    if (d.x != null) { cp.x = r1(clamp100(d.x + 5)); cp.y = r1(clamp100(d.y + 5)); }
+    if (d.points) cp.points = d.points.map((p) => [r1(clamp100(p[0] + 5)), r1(clamp100(p[1] + 5))]);
+    cp.a1 = cp.a2 = null;
+    b.drawings.push(cp);
+    S.boardSel = { id: cp.id };
+    boardCommit(t, b);
+  }
+  function recolorSelection(t, b) {
+    const sel = S.boardSel;
+    if (!sel) { repaintBoard(t, b); return; }
+    const d = (b.drawings || []).filter((x) => x.id === sel.id)[0];
+    if (d) { pushHist(t, b); d.color = S.boardColor; d.w = S.boardWidth; d.dash = S.boardDash; boardCommit(t, b); return; }
+    const mk = (b.markers || []).filter((x) => x.id === sel.id)[0];
+    if (mk && mk.kind === "point") { pushHist(t, b); mk.color = S.boardColor; boardCommit(t, b); return; }
+    repaintBoard(t, b);
+  }
+  function boardEditSelText(t, b) {
+    const sel = S.boardSel;
+    if (!sel) { toast("Сначала выберите элемент"); return; }
+    const d = (b.drawings || []).concat(b.markers || []).filter((x) => x.id === sel.id)[0];
+    if (!d) return;
+    if (d.kind === "player") {
+      const p = playerById(d.playerId);
+      openSheet(p ? p.name : "Игрок",
+        fld("Игрок", '<select id="esPlayer">' + playerOptions(d.playerId) + "</select>") +
+        fld("Заметка к токену", '<input id="esNote" maxlength="120" value="' + esc(d.note || "") + '">'),
+        '<button class="btn ghost" data-x type="button">Отмена</button><button class="btn" data-ok type="button">Сохранить</button>');
+      $("[data-x]").onclick = closeSheet;
+      $("[data-ok]").onclick = () => {
+        pushHist(t, b);
+        d.playerId = $("#esPlayer").value || d.playerId;
+        d.note = $("#esNote").value.trim();
+        closeSheet();
+        boardCommit(t, b);
+      };
+      return;
+    }
+    if (d.type === "nade") {
+      askBoardText("text", (val) => {
+        pushHist(t, b);
+        d.label = val.slice(0, 3);
+        boardCommit(t, b);
+      }, d.label || "");
+      return;
+    }
+    const isNum = d.type === "number";
+    askBoardText(isNum ? "number" : "text", (val) => {
+      pushHist(t, b);
+      d.text = val;
+      boardCommit(t, b);
+    }, d.text || "");
+  }
+  /** От выбранной точки/токена тянем стрелку: тап по схеме — и маршрут готов. */
+  function boardStartArrowFromSel(t, b) {
+    const sel = S.boardSel;
+    if (!sel) { toast("Сначала выберите элемент"); return; }
+    const mk = (b.markers || []).filter((x) => x.id === sel.id)[0];
+    const d = (b.drawings || []).filter((x) => x.id === sel.id)[0];
+    let from = null, anchorId = null;
+    if (mk) { from = { x: mk.x, y: mk.y }; anchorId = mk.id; }
+    else if (d && d.x != null) { from = { x: d.x, y: d.y }; }
+    else if (d && d.x2 != null) { from = { x: d.x2, y: d.y2 }; }
+    if (!from) { toast("Стрелку можно потянуть от токена, номера или подписи", "warn"); return; }
+    S.boardFrom = { blockId: b.id, from: from, anchor: anchorId };
+    toast("Теперь тапните, куда идёт движение");
+  }
+  function boardClear(t, b) {
+    if (!(b.drawings || []).length && !(b.markers || []).length) { toast("Схема уже пустая"); return; }
+    confirmDlg("Очистить всю схему? Будет кнопка «Отменить».", () => {
+      pushHist(t, b);
+      b.drawings = []; b.markers = [];
+      S.boardSel = null;
+      boardCommit(t, b);
+    });
+  }
+
+  /* --- wiring --- */
   function wireBoards(view, t) {
     $$("[data-board]", view).forEach((wrap) => {
       const b = blockById(t, wrap.dataset.board);
       if (!b) return;
-      $$("[data-bzoom]", wrap).forEach((x) => { x.onclick = () => wrap.classList.toggle("big"); });
-      if (!isCap()) return;
-      $$("[data-tool]", wrap).forEach((btn) => {
-        btn.onclick = () => { S.boardTool = btn.dataset.tool; S.boardSel = null; S.boardPending = null; render(); };
-      });
-      $$("[data-color]", wrap).forEach((btn) => {
-        btn.onclick = () => {
-          S.boardColor = btn.dataset.color;
-          recolorSelection(t, b);
-        };
-      });
-      $("[data-addmarker]", wrap).onclick = () => sheetAddMarker(t, b);
-      $("[data-mstyle]", wrap).onclick = async () => {
-        b.markerStyle = (b.markerStyle || "number") === "nick" ? "number" : "nick";
-        await silentBoardSave(t, b);
-      };
-      $("[data-bundo]", wrap).onclick = () => boardUndo(t, b);
-      $("[data-bdel]", wrap).onclick = () => boardDeleteSel(t, b);
+      wireBoardBar(wrap, t, b);
       const svg = $("[data-svg]", wrap);
       if (svg) bindBoardSVG(svg, t, b);
+      wrap.addEventListener("keydown", (e) => boardKeys(e, t, b));
+    });
+  }
+  function boardKeys(e, t, b) {
+    if (!isCap()) return;
+    const k = e.key;
+    if (k === "Escape") {
+      if (S.boardBig === b.id) { S.boardBig = null; S.boardWait = null; S.boardFrom = null; render(); return; }
+      S.boardFrom = null;
+      if (S.boardWait === b.id) S.boardWait = null;
+      if (S.boardSel) { S.boardSel = null; }
+      repaintBoard(t, b);
+      return;
+    }
+    const meta = e.ctrlKey || e.metaKey;
+    if (meta && (k === "z" || k === "Z")) { e.preventDefault(); if (e.shiftKey) boardRedo(t, b); else boardUndo(t, b); return; }
+    if (meta && (k === "y" || k === "Y")) { e.preventDefault(); boardRedo(t, b); return; }
+    if (meta && (k === "d" || k === "D")) { e.preventDefault(); boardDupSel(t, b); return; }
+    if (k === "Delete" || k === "Backspace") { e.preventDefault(); boardDeleteSel(t, b); return; }
+    if (meta) return;
+    for (let i = 0; i < BOARD_TOOLS.length; i++) {
+      if (k.toUpperCase() === BOARD_TOOLS[i].key) {
+        S.boardTool = BOARD_TOOLS[i].id;
+        S.boardSel = null;
+        repaintBoard(t, b);
+        return;
+      }
+    }
+  }
+  function wireBoardBar(wrap, t, b) {
+    $$("[data-bzoom]", wrap).forEach((el) => {
+      el.onclick = (e) => { e.preventDefault(); e.stopPropagation(); S.boardBig = S.boardBig === b.id ? null : b.id; render(); };
+    });
+    const zc = $("[data-bclose]", wrap);
+    if (zc) zc.onclick = (e) => { e.preventDefault(); e.stopPropagation(); S.boardBig = null; render(); };
+    if (!isCap()) return;
+    $$("[data-tool]", wrap).forEach((btn) => {
+      btn.onclick = () => {
+        S.boardTool = S.boardTool === btn.dataset.tool && btn.dataset.tool !== "select" ? "select" : btn.dataset.tool;
+        S.boardSel = null;
+        S.boardFrom = null;
+        S.boardWait = null;
+        repaintBoard(t, b);
+        // Фокус на доске — сразу работают горячие клавиши (V/A/L/P/Z/N/T/G/E, Ctrl+Z).
+        try { wrap.focus({ preventScroll: true }); } catch (e) {}
+      };
+    });
+    $$("[data-color]", wrap).forEach((btn) => {
+      btn.onclick = () => { S.boardColor = btn.dataset.color; recolorSelection(t, b); };
+    });
+    $$("[data-w]", wrap).forEach((btn) => {
+      btn.onclick = () => { S.boardWidth = +btn.dataset.w; recolorSelection(t, b); };
+    });
+    $$("[data-tog]", wrap).forEach((btn) => {
+      btn.onclick = () => {
+        const k = btn.dataset.tog;
+        if (k === "dash") S.boardDash = !S.boardDash;
+        else if (k === "head") S.boardHead = S.boardHead === "both" ? "end" : "both";
+        else if (k === "grid") { S.boardGrid = !S.boardGrid; wrap.classList.toggle("grid", S.boardGrid); }
+        repaintBoard(t, b);
+      };
+    });
+    $$("[data-nade]", wrap).forEach((btn) => {
+      btn.onclick = () => { S.boardNade = btn.dataset.nade; repaintBoard(t, b); };
+    });
+    const ms = $("[data-mstyle]", wrap);
+    if (ms) ms.onclick = async () => {
+      const order = ["number", "nick", "both"];
+      const i = order.indexOf(b.markerStyle || "number");
+      b.markerStyle = order[(i + 1) % order.length];
+      await boardSaveNow(t, b);
+      repaintBoard(t, b);
+    };
+    $$("[data-bundo]", wrap).forEach((el) => { el.onclick = () => boardUndo(t, b); });
+    $$("[data-bredo]", wrap).forEach((el) => { el.onclick = () => boardRedo(t, b); });
+    $$("[data-bdel]", wrap).forEach((el) => { el.onclick = () => boardDeleteSel(t, b); });
+    $$("[data-bdupel]", wrap).forEach((el) => { el.onclick = () => boardDupSel(t, b); });
+    $$("[data-beditel]", wrap).forEach((el) => { el.onclick = () => boardEditSelText(t, b); });
+    $$("[data-bline]", wrap).forEach((el) => { el.onclick = () => boardStartArrowFromSel(t, b); });
+    $$("[data-bplace]", wrap).forEach((el) => { el.onclick = () => boardAutoPlace(t, b); });
+    $$("[data-bfan]", wrap).forEach((el) => {
+      el.onclick = () => {
+        if (S.boardWait === b.id) { S.boardWait = null; repaintBoard(t, b); return; }
+        S.boardWait = b.id;
+        S.boardTool = "select";
+        toast("Тапните точку на схеме");
+        repaintBoard(t, b);
+      };
+    });
+    $$("[data-bclear]", wrap).forEach((el) => { el.onclick = () => boardClear(t, b); });
+  }
+  function boardSaveNow(t, b) {
+    const blocks = clone(t.blocks || []);
+    const i = blocks.findIndex((x) => x.id === b.id);
+    if (i >= 0) blocks[i] = clone(b);
+    saveState("saving");
+    return DB.save("tactics", { id: t.id, blocks }).then(() => saveState("saved")).catch((e) => {
+      saveState("");
+      toast((e && e.message) || "Не сохранилось", "warn");
+      throw e;
     });
   }
 
-  async function silentBoardSave(t, b) {
-    saveState("saving");
-    try {
-      const blocks = clone(t.blocks || []);
-      const i = blocks.findIndex((x) => x.id === b.id);
-      if (i >= 0) blocks[i] = clone(b);
-      await DB.save("tactics", { id: t.id, blocks });
-      saveState("saved");
-      render();
-    } catch (e) { saveState(""); toast((e && e.message) || "Не сохранилось", "warn"); }
+  /* --- pointer interactions --- */
+  function svgPoint(svg, e) {
+    const r = svg.getBoundingClientRect();
+    const cx = (e.touches && e.touches[0] ? e.touches[0].clientX : e.clientX);
+    const cy = (e.touches && e.touches[0] ? e.touches[0].clientY : e.clientY);
+    let x = r.width ? ((cx - r.left) / r.width) * 100 : 50;
+    let y = r.height ? ((cy - r.top) / r.height) * 100 : 50;
+    x = clamp100(x); y = clamp100(y);
+    if (S.boardGrid) { x = Math.round(x / 5) * 5; y = Math.round(y / 5) * 5; }
+    return { x: r1(x), y: r1(y) };
   }
-  function recolorSelection(t, b) {
-    const sel = S.boardSel;
-    if (!sel) { render(); return; }
-    const d = (b.drawings || []).find((x) => x.id === sel.id);
-    if (d) { d.color = S.boardColor; silentBoardSave(t, b); return; }
-    const mk = (b.markers || []).find((x) => x.id === sel.id);
-    if (mk && mk.kind === "point") { mk.color = S.boardColor; silentBoardSave(t, b); return; }
-    render();
-  }
-  function boardUndo(t, b) {
-    if ((b.drawings || []).length) { b.drawings.pop(); silentBoardSave(t, b); }
-    else if ((b.markers || []).length) { b.markers.pop(); silentBoardSave(t, b); }
-  }
-  function boardDeleteSel(t, b) {
-    const sel = S.boardSel;
-    if (!sel) { toast("Сначала выберите пометку"); return; }
-    b.drawings = (b.drawings || []).filter((x) => x.id !== sel.id);
-    b.markers = (b.markers || []).filter((x) => x.id !== sel.id);
-    S.boardSel = null;
-    silentBoardSave(t, b);
-  }
+  function bindBoardSVG(svg, t, b) {
+    svg.addEventListener("pointerdown", (e) => {
+      if (!isCap() || (e.button != null && e.button > 0)) return;
+      const pt = svgPoint(svg, e);
+      const handle = e.target.closest ? e.target.closest("[data-handle]") : null;
+      const drawEl = e.target.closest ? e.target.closest("[data-draw]") : null;
+      const markEl = e.target.closest ? e.target.closest("[data-marker]") : null;
 
-  function sheetAddMarker(t, b) {
-    const usedPlayers = (b.markers || []).filter((m) => m.kind === "player").map((m) => m.playerId);
-    openSheet("Новый маркер",
-      fld("Тип", '<select id="mkKind"><option value="player">Игрок</option><option value="smoke">💨 Смоук</option><option value="molly">🔥 Молотов</option><option value="flash">⚡ Флешка</option><option value="point">Точка с подписью</option></select>') +
-      '<div id="mkPlayerWrap">' + fld("Игрок", '<select id="mkPlayer">' + DB.cache.players.filter((p) => usedPlayers.indexOf(p.id) < 0).map((p) => '<option value="' + p.id + '">' + esc(p.name) + "</option>").join("") + "</select>") + "</div>" +
-      '<div id="mkPointWrap" hidden>' + fld("Подпись", '<input id="mkLabel" maxlength="18" placeholder="CT">') + "</div>" +
-      fld("Заметка (необязательно)", '<input id="mkNote" maxlength="120">'),
-      '<button class="btn ghost" data-x type="button">Отмена</button><button class="btn" data-ok type="button">Поставить на схему</button>');
+      // 1) режим «стрелки к точке»
+      if (S.boardWait === b.id) {
+        e.preventDefault();
+        S.boardWait = null;
+        boardFanOut(t, b, pt);
+        return;
+      }
+      // 2) стрелка от выбранного элемента
+      if (S.boardFrom && S.boardFrom.blockId === b.id) {
+        e.preventDefault();
+        const from = S.boardFrom.from;
+        pushHist(t, b);
+        b.drawings = b.drawings || [];
+        const nd = {
+          id: uid("d"), type: "arrow", x1: r1(from.x), y1: r1(from.y), x2: pt.x, y2: pt.y, bend: 0,
+          color: S.boardColor, w: S.boardWidth, dash: S.boardDash, head: S.boardHead,
+        };
+        b.drawings.push(nd);
+        if (S.boardFrom.anchor) nd.a1 = S.boardFrom.anchor; else attachAnchors(b, nd);
+        S.boardFrom = null;
+        S.boardSel = { id: nd.id };
+        boardCommit(t, b);
+        return;
+      }
+      // 3) ручки выделенного элемента
+      if (handle && S.boardSel) {
+        e.preventDefault();
+        startHandleDrag(e, svg, t, b, handle.dataset.handle);
+        return;
+      }
+      // 4) инструменты рисования
+      if (S.boardTool === "arrow" || S.boardTool === "line" || S.boardTool === "pen" || S.boardTool === "zone") {
+        e.preventDefault();
+        startStroke(e, svg, t, b, pt, S.boardTool);
+        return;
+      }
+      if (S.boardTool === "player") {
+        e.preventDefault();
+        const p = nextFreePlayer(b);
+        if (!p) { toast("Весь состав уже на схеме — тяните токены пальцем", "warn"); S.boardTool = "select"; repaintBoard(t, b); return; }
+        pushHist(t, b);
+        const mk = { id: uid("m"), kind: "player", playerId: p.id, label: "", color: p.color || "", x: pt.x, y: pt.y, note: "" };
+        b.markers = b.markers || [];
+        b.markers.push(mk);
+        S.boardSel = { id: mk.id };
+        boardCommit(t, b);
+        toast("① " + p.name + " → " + playerByIdOrder(p));
+        return;
+      }
+      if (S.boardTool === "number" || S.boardTool === "nade") {
+        e.preventDefault();
+        pushHist(t, b);
+        b.drawings = b.drawings || [];
+        if (S.boardTool === "number") {
+          const next = nextNumber(b);
+          const d = { id: uid("d"), type: "number", x: pt.x, y: pt.y, text: String(next), color: S.boardColor, w: S.boardWidth };
+          b.drawings.push(d);
+          S.boardSel = { id: d.id };
+        } else {
+          const d = { id: uid("d"), type: "nade", kind: S.boardNade, x: pt.x, y: pt.y, color: S.boardColor, w: S.boardWidth, label: String(nadeCount(b) + 1) };
+          b.drawings.push(d);
+          S.boardSel = { id: d.id };
+        }
+        boardCommit(t, b);
+        return;
+      }
+      if (S.boardTool === "text") {
+        e.preventDefault();
+        askBoardText("text", (val) => {
+          pushHist(t, b);
+          b.drawings = b.drawings || [];
+          const d = { id: uid("d"), type: "text", x: pt.x, y: pt.y, text: val, color: S.boardColor, w: S.boardWidth };
+          b.drawings.push(d);
+          S.boardSel = { id: d.id };
+          boardCommit(t, b);
+        }, "");
+        return;
+      }
+      if (S.boardTool === "eraser") {
+        e.preventDefault();
+        const victim = (drawEl && drawEl.dataset.draw) || (markEl && markEl.dataset.marker);
+        if (!victim) return;
+        S.boardSel = { id: victim };
+        boardDeleteSel(t, b);
+        return;
+      }
+      // 5) выделение/перетаскивание
+      if (markEl) {
+        e.preventDefault();
+        S.boardSel = { id: markEl.dataset.marker };
+        startMarkerDrag(e, svg, t, b, markEl);
+        return;
+      }
+      if (drawEl) {
+        e.preventDefault();
+        S.boardSel = { id: drawEl.dataset.draw };
+        startDrawDrag(e, svg, t, b, drawEl);
+        return;
+      }
+      if (S.boardSel) { S.boardSel = null; repaintBoard(t, b); }
+    });
+  }
+  function nextNumber(b) {
+    let max = 0;
+    (b.drawings || []).forEach((d) => { if (d.type === "number" && +d.text > max) max = +d.text; });
+    return max + 1;
+  }
+  function nadeCount(b) {
+    return (b.drawings || []).filter((d) => d.type === "nade").length +
+      (b.markers || []).filter((m) => m.kind === "smoke" || m.kind === "molly" || m.kind === "flash" || m.kind === "he").length;
+  }
+  function askBoardText(type, cb, preset) {
+    openSheet(type === "number" ? "Номер" : "Подпись",
+      fld(type === "number" ? "Число 1–99" : "Текст (до 26 знаков)",
+        '<input id="btVal" maxlength="' + (type === "number" ? 2 : 26) + '" ' + (type === "number" ? 'inputmode="numeric"' : "") +
+        ' value="' + esc(preset || "") + '">'),
+      '<button class="btn ghost" data-x type="button">Отмена</button><button class="btn" data-ok type="button">Поставить</button>');
     $("[data-x]").onclick = closeSheet;
-    $("#mkKind").onchange = (e) => {
-      $("#mkPlayerWrap").hidden = e.target.value !== "player";
-      $("#mkPointWrap").hidden = e.target.value !== "point";
-    };
     $("[data-ok]").onclick = () => {
-      const kind = $("#mkKind").value;
-      const marker = { id: uid("m"), kind, x: 50, y: 50, note: $("#mkNote").value.trim() };
-      if (kind === "player") {
-        marker.playerId = $("#mkPlayer").value || null;
-        if (!marker.playerId) { toast("Нет свободных игроков", "warn"); return; }
-      }
-      if (kind === "point") {
-        marker.label = $("#mkLabel").value.trim() || "?";
-        marker.color = S.boardColor;
-      }
+      let v = $("#btVal").value.trim();
+      if (type === "number") {
+        v = v.replace(/\D/g, "").slice(0, 2);
+        if (!v || +v < 1) return;
+      } else if (!v) return;
+      else v = v.slice(0, 26);
       closeSheet();
-      S.boardPending = { blockId: b.id, marker };
-      S.boardTool = "select";
-      toast("Тапните по схеме, куда поставить");
+      cb(v);
     };
+    $("#btVal").onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); $("[data-ok]").onclick(); } };
+    setTimeout(() => { const el = $("#btVal"); if (el) el.focus(); }, 50);
+  }
+  function dragLoop(move, up) {
+    S.boardBusy = true;
+    window.addEventListener("pointermove", move, { passive: false });
+    const end = (e) => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", end);
+      window.removeEventListener("pointercancel", end);
+      S.boardBusy = false;
+      up(e);
+    };
+    window.addEventListener("pointerup", end, { once: true });
+    window.addEventListener("pointercancel", end, { once: true });
+  }
+  function startMarkerDrag(e, svg, t, b, el) {
+    const mk = (b.markers || []).filter((x) => x.id === el.dataset.marker)[0];
+    if (!mk) { repaintBoard(t, b); return; }
+    const origin = { x: mk.x, y: mk.y };
+    let moved = false;
+    const move = (ev) => {
+      if (ev.cancelable) ev.preventDefault();
+      const p = svgPoint(svg, ev);
+      if (Math.abs(p.x - origin.x) < 0.2 && Math.abs(p.y - origin.y) < 0.2 && !moved) return;
+      if (!moved) { moved = true; pushHist(t, b); }
+      mk.x = r1(p.x); mk.y = r1(p.y);
+      el.setAttribute("transform", "translate(" + mk.x + "," + mk.y + ")");
+      followAnchors(b, mk.id);
+      refreshArrowPaths(svg, b, mk.id);
+    };
+    dragLoop(move, () => {
+      if (!moved) return;
+      boardCommit(t, b);
+    });
+  }
+  /** Быстро перекрасить только те стрелки, что привязаны к токену. */
+  function refreshArrowPaths(svg, b, mkId) {
+    (b.drawings || []).forEach((d) => {
+      if ((d.type !== "arrow" && d.type !== "line") || (d.a1 !== mkId && d.a2 !== mkId)) return;
+      const g = svg.querySelector('[data-draw="' + d.id + '"]');
+      if (g) paintShape(g, d);
+    });
+  }
+  function paintShape(g, d) {
+    const p = arrowPathD(d);
+    ["hit", "vis", "halo"].forEach((k) => {
+      const el = g.querySelector(".shape." + k);
+      if (el) el.setAttribute("d", p);
+    });
+    const heads = g.querySelectorAll(".ahead");
+    if (heads.length) {
+      const c = bendPoint(d);
+      heads[0].setAttribute("d", triPath(d.x2, d.y2, c.x, c.y, headSize(d)));
+      if (heads[1]) heads[1].setAttribute("d", triPath(d.x1, d.y1, c.x, c.y, headSize(d)));
+    }
+  }
+  function startDrawDrag(e, svg, t, b, el) {
+    const d = (b.drawings || []).filter((x) => x.id === el.dataset.draw)[0];
+    if (!d) { repaintBoard(t, b); return; }
+    const start = svgPoint(svg, e);
+    const orig = { x1: d.x1, y1: d.y1, x2: d.x2, y2: d.y2, x: d.x, y: d.y, points: (d.points || []).slice() };
+    let moved = false;
+    const move = (ev) => {
+      if (ev.cancelable) ev.preventDefault();
+      const p = svgPoint(svg, ev);
+      const dx = p.x - start.x, dy = p.y - start.y;
+      if (!moved) {
+        if (Math.abs(dx) < 0.3 && Math.abs(dy) < 0.3) return;
+        moved = true;
+        pushHist(t, b);
+      }
+      if (d.type === "arrow" || d.type === "line") {
+        d.x1 = r1(clamp100(orig.x1 + dx)); d.y1 = r1(clamp100(orig.y1 + dy));
+        d.x2 = r1(clamp100(orig.x2 + dx)); d.y2 = r1(clamp100(orig.y2 + dy));
+        paintShape(el, d);
+      } else if (d.type === "pen") {
+        d.points = (orig.points || []).map((q) => [r1(clamp100(q[0] + dx)), r1(clamp100(q[1] + dy))]);
+        applyLiveOffsets(el, d);
+      } else if (d.type === "zone") {
+        d.x = r1(clamp100(orig.x + dx)); d.y = r1(clamp100(orig.y + dy));
+        applyLiveOffsets(el, d);
+      } else {
+        d.x = r1(clamp100(orig.x + dx)); d.y = r1(clamp100(orig.y + dy));
+        el.setAttribute("transform", "translate(" + d.x + "," + d.y + ")");
+      }
+    };
+    dragLoop(move, () => {
+      if (!moved) return;
+      if (d.type === "arrow" || d.type === "line") attachAnchors(b, d);
+      boardCommit(t, b);
+    });
+  }
+  function startHandleDrag(e, svg, t, b, which) {
+    const sel = S.boardSel;
+    const d = (b.drawings || []).filter((x) => x.id === sel.id)[0];
+    if (!d) return;
+    const g = svg.querySelector('[data-draw="' + d.id + '"]');
+    let moved = false;
+    const move = (ev) => {
+      if (ev.cancelable) ev.preventDefault();
+      const p = svgPoint(svg, ev);
+      if (!moved) { moved = true; pushHist(t, b); }
+      if (d.type === "zone") {
+        d.rx = r1(Math.max(3, Math.abs(p.x - d.x)));
+        d.ry = r1(Math.max(3, Math.abs(p.y - d.y)));
+        if (g) ["zone-hit", "zone-vis", "zone-halo"].forEach((k) => {
+          const el = g.querySelector("." + k);
+          if (el) { el.setAttribute("rx", d.rx); el.setAttribute("ry", d.ry); }
+        });
+        return;
+      }
+      if (which === "b") {
+        const mx = (d.x1 + d.x2) / 2, my = (d.y1 + d.y2) / 2;
+        const dx = d.x2 - d.x1, dy = d.y2 - d.y1;
+        const len = Math.sqrt(dx * dx + dy * dy) || 1;
+        d.bend = r1(Math.max(-32, Math.min(32, (((p.x - mx) * -dy + (p.y - my) * dx) / len) * 2)));
+      } else if (which === "1") { d.x1 = p.x; d.y1 = p.y; d.a1 = null; }
+      else { d.x2 = p.x; d.y2 = p.y; d.a2 = null; }
+      if (g) paintShape(g, d);
+    };
+    dragLoop(move, () => {
+      if (!moved) return;
+      if (d.type !== "zone") attachAnchors(b, d);
+      boardCommit(t, b);
+    });
+  }
+  function startStroke(e, svg, t, b, start, type) {
+    const NS = "http://www.w3.org/2000/svg";
+    let preview = document.createElementNS(NS, "path");
+    preview.setAttribute("class", "preview-line");
+    preview.setAttribute("stroke", S.boardColor);
+    preview.setAttribute("stroke-width", strokePx(S.boardWidth));
+    svg.appendChild(preview);
+    const pts = [[r1(start.x), r1(start.y)]];
+    let end = start, zoneStart = start;
+    const mkHead = (x2, y2, bx, by) => triPath(x2, y2, bx, by, headSize({ w: S.boardWidth }));
+    const drawPreview = () => {
+      if (type === "pen") {
+        preview.setAttribute("d", "M" + pts.map((q) => q.join(" ")).join(" L"));
+      } else if (type === "zone") {
+        const cx = (zoneStart.x + end.x) / 2, cy = (zoneStart.y + end.y) / 2;
+        const rx = Math.abs(end.x - zoneStart.x) / 2, ry = Math.abs(end.y - zoneStart.y) / 2;
+        preview.setAttribute("d", "M" + r1(cx - rx) + " " + r1(cy) +
+          " a" + r1(rx) + " " + r1(ry) + " 0 1 0 " + r1(rx * 2) + " 0 a" + r1(rx) + " " + r1(ry) + " 0 1 0 " + r1(-rx * 2) + " 0 Z");
+      } else {
+        preview.setAttribute("d", "M" + start.x + " " + start.y + " L" + end.x + " " + end.y + " " + mkHead(end.x, end.y, start.x, start.y));
+      }
+    };
+    drawPreview();
+    const move = (ev) => {
+      if (ev.cancelable) ev.preventDefault();
+      const p = svgPoint(svg, ev);
+      if (type === "pen") {
+        const last = pts[pts.length - 1];
+        if (Math.sqrt((p.x - last[0]) * (p.x - last[0]) + (p.y - last[1]) * (p.y - last[1])) < 0.8) return;
+        pts.push([r1(p.x), r1(p.y)]);
+      } else {
+        end = p;
+      }
+      drawPreview();
+    };
+    dragLoop(move, () => {
+      preview.remove();
+      b.drawings = b.drawings || [];
+      if (type === "pen") {
+        const clean = simplifyPts(pts, 0.45);
+        if (clean.length < 2) return;
+        const d = { id: uid("d"), type: "pen", points: clean, color: S.boardColor, w: S.boardWidth, dash: S.boardDash };
+        pushHist(t, b);
+        b.drawings.push(d);
+        S.boardSel = { id: d.id };
+      } else if (type === "zone") {
+        const rx = Math.abs(end.x - zoneStart.x) / 2, ry = Math.abs(end.y - zoneStart.y) / 2;
+        if (rx < 2 && ry < 2) return;
+        const d = {
+          id: uid("d"), type: "zone", x: r1((zoneStart.x + end.x) / 2), y: r1((zoneStart.y + end.y) / 2),
+          rx: r1(Math.max(3, rx)), ry: r1(Math.max(3, ry)), color: S.boardColor, w: S.boardWidth,
+        };
+        pushHist(t, b);
+        b.drawings.push(d);
+        S.boardSel = { id: d.id };
+      } else {
+        if (Math.sqrt((end.x - start.x) * (end.x - start.x) + (end.y - start.y) * (end.y - start.y)) < 1.6) return;
+        const d = {
+          id: uid("d"), type, x1: r1(start.x), y1: r1(start.y), x2: r1(end.x), y2: r1(end.y),
+          bend: 0, color: S.boardColor, w: S.boardWidth, dash: S.boardDash, head: type === "arrow" ? S.boardHead : null,
+        };
+        attachAnchors(b, d);
+        pushHist(t, b);
+        b.drawings.push(d);
+        S.boardSel = { id: d.id };
+      }
+      boardCommit(t, b);
+    });
+  }
+  /** Убираем «лесенку» от пальца: не даём обводке разрастись до сотен точек. */
+  function simplifyPts(pts, tol) {
+    if (pts.length < 3) return pts;
+    const out = [pts[0]];
+    for (let i = 1; i < pts.length - 1; i++) {
+      const a = out[out.length - 1], p = pts[i], n = pts[i + 1];
+      const cross = Math.abs((p[0] - a[0]) * (n[1] - a[1]) - (p[1] - a[1]) * (n[0] - a[0]));
+      const len = Math.sqrt((n[0] - a[0]) * (n[0] - a[0]) + (n[1] - a[1]) * (n[1] - a[1])) || 1;
+      if (cross / len > tol || i === pts.length - 2) out.push(p);
+    }
+    out.push(pts[pts.length - 1]);
+    return out;
   }
 
+  /* --- шторка настроек схемы --- */
   function sheetBoardEdit(t, b, isNew) {
     openSheet("Схема",
       fld("Заголовок", '<input id="bdTitle" maxlength="60" value="' + esc(b.title || "Схема") + '">') +
-      fld("Свой фон (ссылка, пусто = радар карты)", '<input id="bdBg" maxlength="500" value="' + esc(b.bg || "") + '" placeholder="https://…">'),
+      fld("Свой фон (ссылка, пусто = радар карты)", '<input id="bdBg" maxlength="500" value="' + esc(b.bg || "") + '" placeholder="https://…">') +
+      '<div class="btnrow"><button class="btn ghost tiny" data-bdbg type="button">Загрузить фон из файла</button>' +
+      '<input type="file" accept="image/*" hidden data-bdbgfile></div>' +
+      '<p class="muted tiny">Файл встраивается прямо в схему — видят все. Ссылка — если картинка уже лежит в сети.</p>' +
+      '<div class="divider"></div>' +
+      '<p class="muted tiny">Как рисовать: выбери инструмент и тяни пальцем мышкой. ' +
+      "Стрелка, оконченная у токена игрока, привязывается к нему и едет вместе с ним. " +
+      'Горячие клавиши: V, A, L, P, Z, N, T, G, E · Ctrl+Z — отменить · Delete — удалить.</p>',
       '<button class="btn ghost" data-x type="button">Отмена</button>' +
       (isNew ? "" : '<button class="btn danger" data-clear type="button">Очистить</button>') +
       '<button class="btn" data-ok type="button">Сохранить</button>');
     $("[data-x]").onclick = closeSheet;
     const clr = $("[data-clear]");
     if (clr) clr.onclick = () => confirmDlg("Очистить схему?", () => {
+      pushHist(t, b);
       b.markers = []; b.drawings = [];
       const blocks = clone(t.blocks || []);
       const i = blocks.findIndex((x) => x.id === b.id);
       if (i >= 0) { blocks[i] = clone(b); saveBlocks(t, blocks, null).then(() => closeSheet()); }
     });
+    const upl = $("[data-bdbg]"), uplFile = $("[data-bdbgfile]");
+    if (upl && uplFile) {
+      upl.onclick = () => uplFile.click();
+      uplFile.onchange = async () => {
+        const file = uplFile.files && uplFile.files[0];
+        if (!file) return;
+        saveState("saving");
+        try {
+          const up = await DB.adapter.uploadImage(DB.team.id, file);
+          const url = await shrinkDataUrl(up.url, 1200, 0.72);
+          const target = $("#bdBg");
+          if (target) target.value = url;
+          saveState("saved");
+          toast("Фон подставлен — нажмите «Сохранить»", "ok");
+        } catch (err2x) { saveState(""); toast((err2x && err2x.message) || "Не загрузилось", "warn"); }
+      };
+    }
     $("[data-ok]").onclick = async () => {
       b.title = $("#bdTitle").value.trim() || "Схема";
       b.bg = $("#bdBg").value.trim();
@@ -1506,169 +2644,7 @@
     };
   }
 
-  /* --- board pointer interactions --- */
-  function svgPoint(svg, e) {
-    const r = svg.getBoundingClientRect();
-    const cx = (e.touches && e.touches[0] ? e.touches[0].clientX : e.clientX);
-    const cy = (e.touches && e.touches[0] ? e.touches[0].clientY : e.clientY);
-    return {
-      x: Math.max(0, Math.min(100, ((cx - r.left) / r.width) * 100)),
-      y: Math.max(0, Math.min(100, ((cy - r.top) / r.height) * 100)),
-    };
-  }
-  const r1 = (v) => Math.round(v * 10) / 10;
-
-  function bindBoardSVG(svg, t, b) {
-    svg.addEventListener("pointerdown", (e) => {
-      if (!isCap() || (e.button != null && e.button > 0)) return;
-      const pt = svgPoint(svg, e);
-      // Постановка отложенного маркера.
-      if (S.boardPending && S.boardPending.blockId === b.id) {
-        e.preventDefault();
-        const mk = S.boardPending.marker;
-        mk.x = r1(pt.x); mk.y = r1(pt.y);
-        S.boardPending = null;
-        b.markers = b.markers || [];
-        b.markers.push(mk);
-        silentBoardSave(t, b);
-        return;
-      }
-      const drawEl = e.target.closest ? e.target.closest("[data-draw]") : null;
-      const markEl = e.target.closest ? e.target.closest("[data-marker]") : null;
-      if (S.boardTool === "select") {
-        e.preventDefault();
-        if (markEl) {
-          S.boardSel = { id: markEl.dataset.marker };
-          startMarkerDrag(e, svg, t, b, markEl);
-        } else if (drawEl) {
-          S.boardSel = { id: drawEl.dataset.draw };
-          startDrawDrag(e, svg, t, b, drawEl);
-        } else {
-          S.boardSel = null;
-          render();
-        }
-        return;
-      }
-      if (S.boardTool === "number" || S.boardTool === "text") {
-        e.preventDefault();
-        askBoardText(S.boardTool, (val) => {
-          b.drawings = b.drawings || [];
-          const d = { id: uid("d"), type: S.boardTool, x: r1(pt.x), y: r1(pt.y), text: val, color: S.boardColor };
-          b.drawings.push(d);
-          S.boardSel = { id: d.id };
-          silentBoardSave(t, b);
-        });
-        return;
-      }
-      if (S.boardTool === "arrow" || S.boardTool === "line" || S.boardTool === "pen") {
-        e.preventDefault();
-        startStroke(e, svg, t, b, pt, S.boardTool);
-      }
-    });
-  }
-  function askBoardText(type, cb) {
-    openSheet(type === "number" ? "Номер" : "Подпись",
-      fld(type === "number" ? "Число 1–99" : "Текст", '<input id="btVal" maxlength="' + (type === "number" ? 2 : 24) + '" ' + (type === "number" ? 'inputmode="numeric"' : "") + ">"),
-      '<button class="btn ghost" data-x type="button">Отмена</button><button class="btn" data-ok type="button">Поставить</button>');
-    $("[data-x]").onclick = closeSheet;
-    $("[data-ok]").onclick = () => {
-      let v = $("#btVal").value.trim();
-      if (type === "number") {
-        v = v.replace(/\D/g, "").slice(0, 2);
-        if (!v || +v < 1) return;
-      } else if (!v) return;
-      else v = v.slice(0, 24);
-      closeSheet();
-      cb(v);
-    };
-    setTimeout(() => $("#btVal").focus(), 50);
-  }
-  function dragLoop(move, up) {
-    window.addEventListener("pointermove", move, { passive: false });
-    const end = (e) => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", end);
-      window.removeEventListener("pointercancel", end);
-      up(e);
-    };
-    window.addEventListener("pointerup", end, { once: true });
-    window.addEventListener("pointercancel", end, { once: true });
-  }
-  function startMarkerDrag(e, svg, t, b, el) {
-    const mk = (b.markers || []).find((x) => x.id === el.dataset.marker);
-    if (!mk) return;
-    el.classList.add("selected");
-    const move = (ev) => {
-      if (ev.cancelable) ev.preventDefault();
-      const p = svgPoint(svg, ev);
-      el.setAttribute("transform", "translate(" + p.x + "," + p.y + ")");
-      mk._px = p.x; mk._py = p.y;
-    };
-    dragLoop(move, () => {
-      if (mk._px != null) { mk.x = r1(mk._px); mk.y = r1(mk._py); delete mk._px; delete mk._py; }
-      silentBoardSave(t, b);
-    });
-  }
-  function startDrawDrag(e, svg, t, b, el) {
-    const d = (b.drawings || []).find((x) => x.id === el.dataset.draw);
-    if (!d) return;
-    el.classList.add("selected");
-    const start = svgPoint(svg, e);
-    let dx = 0, dy = 0;
-    const move = (ev) => {
-      if (ev.cancelable) ev.preventDefault();
-      const p = svgPoint(svg, ev);
-      dx = p.x - start.x; dy = p.y - start.y;
-      el.setAttribute("transform", "translate(" + dx + "," + dy + ")");
-    };
-    dragLoop(move, () => {
-      dx = r1(dx); dy = r1(dy);
-      if (d.type === "arrow" || d.type === "line") { d.x1 = r1(d.x1 + dx); d.y1 = r1(d.y1 + dy); d.x2 = r1(d.x2 + dx); d.y2 = r1(d.y2 + dy); }
-      else if (d.type === "pen") d.points = (d.points || []).map((p) => [r1(p[0] + dx), r1(p[1] + dy)]);
-      else { d.x = r1(d.x + dx); d.y = r1(d.y + dy); }
-      silentBoardSave(t, b);
-    });
-  }
-  function startStroke(e, svg, t, b, start, type) {
-    const NS = "http://www.w3.org/2000/svg";
-    let preview, pts = [[r1(start.x), r1(start.y)]], end = start;
-    if (type === "pen") {
-      preview = document.createElementNS(NS, "polyline");
-      preview.setAttribute("points", pts[0].join(","));
-    } else {
-      preview = document.createElementNS(NS, "line");
-      preview.setAttribute("x1", start.x); preview.setAttribute("y1", start.y);
-      preview.setAttribute("x2", start.x); preview.setAttribute("y2", start.y);
-    }
-    preview.setAttribute("class", "preview-line");
-    preview.setAttribute("stroke", S.boardColor);
-    svg.appendChild(preview);
-    const move = (ev) => {
-      if (ev.cancelable) ev.preventDefault();
-      const p = svgPoint(svg, ev);
-      if (type === "pen") {
-        const last = pts[pts.length - 1];
-        if (Math.hypot(p.x - last[0], p.y - last[1]) < 0.7) return;
-        pts.push([r1(p.x), r1(p.y)]);
-        preview.setAttribute("points", pts.map((q) => q.join(",")).join(" "));
-      } else {
-        end = p;
-        preview.setAttribute("x2", p.x); preview.setAttribute("y2", p.y);
-      }
-    };
-    dragLoop(move, () => {
-      preview.remove();
-      b.drawings = b.drawings || [];
-      if (type === "pen") {
-        if (pts.length < 2) return;
-        b.drawings.push({ id: uid("d"), type: "pen", points: pts, color: S.boardColor });
-      } else {
-        if (Math.hypot(end.x - start.x, end.y - start.y) < 2) return;
-        b.drawings.push({ id: uid("d"), type, x1: r1(start.x), y1: r1(start.y), x2: r1(end.x), y2: r1(end.y), color: S.boardColor });
-      }
-      silentBoardSave(t, b);
-    });
-  }
+  /* ---------- /board block ---------- */
 
   /* ---------- players ---------- */
   function viewPlayers() {
@@ -1989,6 +2965,15 @@
       '<div class="btnrow"><button class="btn ghost tiny" data-pinteam type="button">Сменить PIN команды</button>' +
       '<button class="btn ghost tiny" data-pincap type="button">Сменить PIN капитана</button></div></div></div>';
 
+    // Фото на входе
+    html += '<div class="sec"><div class="sec-head"><h2>Фото на входе</h2><button class="more" data-authbg type="button">Настроить</button></div>' +
+      '<div class="sec-pad"><p class="muted tiny">' +
+      (teamAuthBg() ? "Стоит общее фото команды — его видят все при входе, меню затемнено и размыто поверх."
+        : "Общего фото нет: каждый видит стандартное (или своё, если поставил локально).") +
+      "</p>" +
+      '<div class="btnrow"><button class="btn ghost tiny" data-authbgpick type="button">Загрузить для всех</button>' +
+      '<button class="btn ghost tiny" data-authbgclear type="button"' + (teamAuthBg() ? "" : " disabled") + ">Убрать общее</button></div></div></div>";
+
     // Быстрые действия
     html += '<div class="sec"><div class="sec-head"><h2>Быстрое создание</h2></div><div class="sec-pad"><div class="btnrow" style="margin-top:0">' +
       '<button class="btn ghost tiny" data-q="player" type="button">+ Игрок</button>' +
@@ -2038,6 +3023,25 @@
       b.onclick = () => { const [k, id] = b.dataset.act.split(":"); if (k && id) openRef(k, id); };
     });
     $("[data-teamedit]", view).onclick = sheetTeamEdit;
+    $("[data-authbg]", view).onclick = sheetAuthBg;
+    $("[data-authbgpick]", view).onclick = () => {
+      pickAuthBg({
+        maxW: 1600, quality: 0.72,
+        onUrl: async (url) => { const ok = await pushAuthBgToTeam({ src: url }); if (ok) render(); },
+      });
+    };
+    const bgClear = $("[data-authbgclear]", view);
+    if (bgClear) bgClear.onclick = async () => {
+      saveState("saving");
+      try {
+        DB.team = await DB.adapter.updateTeam(DB.team.id, { settings: { authBg: null } });
+        DB.persistSession();
+        await DB.log("убрал общее фото входа", null);
+        saveState("saved");
+        render();
+        toast("Общее фото убрано", "ok");
+      } catch (e) { saveState(""); toast((e && e.message) || "Не сохранилось", "warn"); }
+    };
     $("[data-pinteam]", view).onclick = () => sheetChangePin("team");
     $("[data-pincap]", view).onclick = () => sheetChangePin("captain");
     $$("[data-q]", view).forEach((b) => {
@@ -2260,11 +3264,17 @@
       else if (DB.mode() === "cloud") toast(DB.online ? "Соединение восстановлено" : "Нет соединения", DB.online ? "ok" : "warn");
       return;
     }
-    if (evt.type === "team") { render(false); return; }
+    if (evt.type === "team") { syncAuthBgFromTeam(); render(false); return; }
     if (evt.type === "favs") { render(); return; }
     if (evt.type === "data") {
       DB.refresh(evt.table === "*" ? "*" : evt.table).then(() => {
         if (!DB.team) return;
+        // Пока капитан ведёт линию, страницу не пересобираем: иначе жест срывается,
+        // а своя правка схемы уже отрисована локально (repaintBoard).
+        if (S.boardBusy && (evt.table === "tactics" || evt.table === "*")) {
+          if (evt.origin === "remote") S.dirtyRemote = true;
+          return;
+        }
         if (sheetOpen() || modalOpen() || menuOpen()) {
           S.dirtyRemote = true;
           if (evt.origin === "remote") toast("Обновлено");
@@ -2280,10 +3290,18 @@
   }
 
   function boot() {
+    // Фон входа включаем сразу, до DB.init: иначе перед экраном входа мелькает тёмный экран.
+    document.body.classList.toggle("auth-mode", !DB.team);
+    applyAuthScene();
+    bindAuthSceneFx();
     $("#searchBtn").onclick = () => { if (DB.team) openSearch(); };
     window.addEventListener("hashchange", route);
     document.addEventListener("keydown", (e) => {
-      if (e.key === "Escape") { closeMenus(); if (modalOpen()) closeModal(); else if (sheetOpen()) closeSheet(); else closeViewer(); }
+      if (e.key === "Escape") {
+        if (S.boardBig) { S.boardBig = null; S.boardWait = null; S.boardFrom = null; render(); return; }
+        closeMenus();
+        if (modalOpen()) closeModal(); else if (sheetOpen()) closeSheet(); else closeViewer();
+      }
     });
     DB.on(onDbEvent);
     DB.init().then(() => {
