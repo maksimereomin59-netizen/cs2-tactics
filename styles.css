@@ -614,3 +614,227 @@ body.captain .tactical-map.editing .draw-item { cursor: grab; }
   .authscene-img, .authscene-light, .authscene-grain, .atc-line path, .atc-dot, .atc-head, .atc-zone ellipse, .authcard { animation: none !important; }
   .authscene-par { transition: none; }
 }
+
+/* ============================================================
+   v10 — витрина: размытый фон команды, стеклянная шапка,
+   карточки карт, плавные появления, чат, серьёзные иконки.
+   ============================================================ */
+
+/* ---------- иконки (вместо смайликов) ---------- */
+.ic {
+  width: 18px; height: 18px; flex: 0 0 auto;
+  display: inline-block; vertical-align: -4px;
+  fill: none; stroke: currentColor; stroke-width: 1.7;
+  stroke-linecap: round; stroke-linejoin: round;
+}
+.ic.fill { fill: currentColor; stroke: none; }
+.toolbtn .ic { width: 16px; height: 16px; }
+.iconbtn .ic { width: 17px; height: 17px; }
+.starbtn .ic { width: 17px; height: 17px; }
+.starbtn.on .ic { fill: var(--accent); stroke: var(--accent); }
+.matic { display: inline-grid; place-items: center; width: 34px; height: 34px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--panel-2); color: var(--muted); flex: 0 0 auto; }
+.matic .ic { width: 16px; height: 16px; }
+.nadeic { display: inline-grid; place-items: center; width: 22px; height: 22px; margin-right: 6px;
+  border-radius: 6px; background: var(--panel-3); color: var(--accent); vertical-align: -6px; }
+.nadeic .ic { width: 13px; height: 13px; }
+
+/* ---------- размытый фон команды на рабочих страницах ---------- */
+.appbg { position: fixed; inset: 0; z-index: 0; display: none; pointer-events: none;
+  background: #0b0e13 center / cover no-repeat; }
+.appbg::after { content: ""; position: absolute; inset: 0;
+  background: linear-gradient(180deg, rgba(10, 13, 18, .82), rgba(10, 13, 18, .9)); }
+body:not(.auth-mode) .appbg { display: block; filter: blur(16px) saturate(.92) brightness(.6); transform: scale(1.06); }
+body:not(.auth-mode) .layout { position: relative; z-index: 1; }
+
+/* ---------- шапка: стекло, без слова PLAYBOOK ---------- */
+.top {
+  background: linear-gradient(180deg, rgba(12, 15, 20, .88), rgba(12, 15, 20, .66));
+  -webkit-backdrop-filter: blur(16px) saturate(1.2); backdrop-filter: blur(16px) saturate(1.2);
+  border-bottom: 1px solid rgba(255, 255, 255, .07);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, .35);
+}
+.brand { text-decoration: none; align-items: center; }
+.brand-logo {
+  display: inline-grid; place-items: center; width: 30px; height: 30px; border-radius: 9px;
+  background: linear-gradient(145deg, #f6c453, #e8a72f 45%, #b97b12);
+  box-shadow: 0 4px 14px rgba(232, 167, 47, .28), inset 0 1px 0 rgba(255, 255, 255, .35);
+  flex: 0 0 auto;
+}
+.brand-logo img { width: 19px; height: 19px; display: block; filter: brightness(0) invert(.12); }
+.brand-team { font-size: 15px; letter-spacing: .01em; }
+.brand-sub { display: none; }
+.iconbtn { background: rgba(26, 33, 44, .6); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+  transition: border-color .2s, color .2s, transform .12s; }
+.iconbtn:active { transform: scale(.94); }
+.rolebadge { border-radius: 20px; padding: 5px 10px; background: rgba(26, 33, 44, .55);
+  -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); transition: color .25s, border-color .25s; }
+.rolebadge.cap { background: rgba(232, 167, 47, .12); }
+.savestate { padding: 4px 8px; border-radius: 20px; background: rgba(26, 33, 44, .55); }
+.savestate.draft { color: var(--accent); }
+
+/* ---------- навигация с иконками ---------- */
+.bnbtn { flex-direction: column; gap: 3px; font-size: 10px; letter-spacing: .02em; min-height: 52px;
+  transition: color .2s, background .2s, transform .12s; }
+.bnbtn:active { transform: scale(.94); }
+.bnbtn .ic { width: 20px; height: 20px; }
+.bnbtn.on { background: linear-gradient(180deg, rgba(232, 167, 47, .16), rgba(232, 167, 47, .05));
+  border-color: rgba(232, 167, 47, .35); color: var(--accent); }
+.bottomnav { background: rgba(12, 15, 20, .92); -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px); }
+.snlink .ic { width: 17px; height: 17px; }
+.snlink.on { color: var(--accent); }
+.snlink.on .ic { stroke: var(--accent); }
+
+/* ---------- плавные появления ---------- */
+@keyframes rise { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+.rev { animation: rise .45s cubic-bezier(.2, .8, .2, 1) both; animation-delay: calc(var(--i, 0) * 45ms); }
+@keyframes fadein { from { opacity: 0; } to { opacity: 1; } }
+#view { animation: fadein .25s ease both; }
+
+/* ---------- карточки карт ---------- */
+.mapgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; margin: 4px 0 14px; }
+.mapcard {
+  position: relative; display: block; aspect-ratio: 16 / 10; overflow: hidden;
+  border: 1px solid var(--border-2); border-radius: 16px; background: #0b0e13;
+  text-decoration: none; color: var(--text);
+  transition: transform .3s cubic-bezier(.2, .8, .2, 1), box-shadow .3s, border-color .3s;
+  -webkit-tap-highlight-color: transparent;
+}
+.mapcard:hover { transform: translateY(-3px); border-color: rgba(232, 167, 47, .5);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, .5); }
+.mapcard:active { transform: scale(.965); box-shadow: 0 6px 18px rgba(0, 0, 0, .4); }
+.mc-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover;
+  transition: transform .6s cubic-bezier(.2, .8, .2, 1), filter .4s; }
+.mapcard:hover .mc-img { transform: scale(1.06); }
+.mc-img.radar { object-fit: contain; background: #0d1117; filter: blur(1px) brightness(.8); transform: scale(1.12); }
+.mc-scrim { position: absolute; inset: 0;
+  background: linear-gradient(180deg, rgba(5, 7, 11, .08) 35%, rgba(5, 7, 11, .55) 68%, rgba(5, 7, 11, .9)); }
+.mc-body { position: absolute; right: 0; bottom: 0; left: 0; display: flex; align-items: flex-end;
+  justify-content: space-between; gap: 8px; padding: 10px 12px; }
+.mc-name { font-size: 19px; font-weight: 900; letter-spacing: .08em; text-transform: uppercase;
+  text-shadow: 0 2px 12px rgba(0, 0, 0, .8); }
+.mapcard .mc-name { position: absolute; inset: 0; display: grid; place-items: center;
+  font-size: 30px; letter-spacing: .12em; padding: 0 10px; text-align: center;
+  text-shadow: 0 4px 24px rgba(0, 0, 0, .8); }
+.mapcard.noart { background: radial-gradient(120% 90% at 50% 0%, #1b2330, #0b0e13 70%); }
+.mc-meta { display: inline-flex; align-items: center; gap: 6px; padding: 4px 9px; border-radius: 20px;
+  background: rgba(10, 13, 18, .68); border: 1px solid rgba(255, 255, 255, .1);
+  color: #cfd6de; font-size: 11px; font-weight: 700; white-space: nowrap;
+  -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); }
+.mc-tools { position: absolute; top: 8px; right: 8px; display: flex; gap: 6px; }
+.mc-tools .starbtn, .mc-tools .menubtn {
+  display: inline-grid; place-items: center; width: 32px; height: 32px; border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, .14); background: rgba(10, 13, 18, .6);
+  -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+  color: #d7dde5; font-size: 16px; cursor: pointer; transition: transform .12s, background .2s;
+}
+.mc-tools .starbtn:active, .mc-tools .menubtn:active { transform: scale(.9); }
+.mc-tools .starbtn.on { color: var(--accent); border-color: rgba(232, 167, 47, .5); }
+
+/* ---------- герой-полоса карты (внутри раздела тактик) ---------- */
+.maphero { position: relative; overflow: hidden; border-radius: 16px; border: 1px solid var(--border-2);
+  margin: 2px 0 12px; padding: 18px 16px; min-height: 108px; display: flex; flex-direction: column;
+  justify-content: flex-end; background: #0b0e13 center / cover no-repeat; }
+.maphero::after { content: ""; position: absolute; inset: 0;
+  background: linear-gradient(180deg, rgba(6, 8, 12, .1), rgba(6, 8, 12, .88)); }
+.maphero > * { position: relative; z-index: 1; }
+.maphero h1 { margin: 0; font-size: 26px; letter-spacing: .06em; text-transform: uppercase; }
+.maphero .sub { margin: 2px 0 0; color: #c8d0da; font-size: 12px; }
+
+/* ---------- компактные стат-чипы обзора ---------- */
+.statchips { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 14px; }
+.statchip { display: inline-flex; align-items: center; gap: 7px; padding: 7px 12px; border-radius: 12px;
+  border: 1px solid var(--border); background: rgba(20, 25, 34, .72);
+  -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+  color: var(--muted); font-size: 12px; font-weight: 700; text-decoration: none;
+  transition: border-color .2s, color .2s, transform .12s; }
+.statchip:active { transform: scale(.95); }
+.statchip b { color: var(--text); font-size: 14px; }
+.statchip .ic { width: 15px; height: 15px; color: var(--accent); }
+.sec { background: rgba(20, 25, 34, .82); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+  transition: border-color .25s; }
+.sec-head h2 { display: flex; align-items: center; gap: 7px; }
+.sec-head h2 .ic { width: 14px; height: 14px; color: var(--accent); }
+
+/* ---------- черновик схемы: явное сохранение ---------- */
+.draftbar { display: flex; align-items: center; gap: 10px; margin: 0 0 12px; padding: 9px 12px;
+  border: 1px solid rgba(232, 167, 47, .4); border-radius: 12px;
+  background: rgba(232, 167, 47, .1); color: #f0d9a6; font-size: 12px; font-weight: 700; }
+.draftbar .ic { width: 16px; height: 16px; color: var(--accent); }
+.draftbar .btn { margin-left: auto; }
+@keyframes pulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(232, 167, 47, .35); } 50% { box-shadow: 0 0 0 6px rgba(232, 167, 47, 0); } }
+.toolbtn.savebtn.dirty { border-color: var(--accent); color: var(--accent); animation: pulse 1.6s infinite; }
+.toolbtn.savebtn .ic { width: 14px; height: 14px; }
+
+/* ---------- чат команды ---------- */
+.noticebanner { display: flex; gap: 10px; align-items: flex-start; margin: 0 0 12px; padding: 11px 13px;
+  border: 1px solid rgba(232, 167, 47, .45); border-left-width: 3px; border-radius: 12px;
+  background: linear-gradient(90deg, rgba(232, 167, 47, .16), rgba(232, 167, 47, .04)); }
+.noticebanner .ic { width: 18px; height: 18px; color: var(--accent); margin-top: 2px; }
+.noticebanner b { display: block; font-size: 12px; }
+.noticebanner small { display: block; color: var(--muted); font-size: 11px; margin-top: 2px; }
+.chatlist { display: flex; flex-direction: column; gap: 8px; max-width: 780px; margin: 0 auto; padding-bottom: 8px; }
+.msg { max-width: 84%; padding: 8px 12px; border: 1px solid var(--border); border-radius: 14px;
+  background: rgba(26, 33, 44, .85); -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); }
+.msg.me { align-self: flex-end; background: rgba(232, 167, 47, .14); border-color: rgba(232, 167, 47, .35); }
+.msg.notice { border-color: rgba(232, 167, 47, .5); background: rgba(232, 167, 47, .1); }
+.mhead { display: flex; align-items: center; gap: 8px; margin-bottom: 3px; color: var(--muted); font-size: 11px; }
+.mhead b { color: var(--text); font-size: 11px; }
+.msg.me .mhead b { color: var(--accent); }
+.mhead time { color: var(--dim); }
+.mdel { margin-left: auto; display: inline-grid; place-items: center; width: 22px; height: 22px;
+  border: 0; border-radius: 6px; background: transparent; color: var(--dim); cursor: pointer; }
+.mdel:hover { color: var(--danger); background: rgba(228, 106, 106, .12); }
+.mdel .ic { width: 13px; height: 13px; }
+.mtext { font-size: 13.5px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.chatbar { position: sticky; bottom: calc(64px + env(safe-area-inset-bottom)); z-index: 5;
+  display: flex; gap: 8px; align-items: center; max-width: 780px; margin: 10px auto 0; padding: 8px;
+  border: 1px solid var(--border); border-radius: 14px; background: rgba(16, 21, 28, .86);
+  -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); }
+.chatbar input { flex: 1; min-width: 0; height: 38px; padding: 0 12px; border: 1px solid var(--border-2);
+  border-radius: 10px; background: #0b0e12; color: var(--text); outline: none; }
+.chatbar input:focus { border-color: var(--accent); }
+.chatbar .btn { min-height: 38px; gap: 7px; }
+.chatbar .btn .ic { width: 15px; height: 15px; }
+.chatbar [data-notice] { min-width: 38px; min-height: 38px; }
+.chatbar [data-notice].on { border-color: var(--accent); color: var(--accent); background: rgba(232, 167, 47, .12); }
+@media (min-width: 900px) { .chatbar { bottom: 12px; } }
+
+/* ---------- прочее ---------- */
+.backlink { display: inline-flex; align-items: center; gap: 6px; color: var(--muted);
+  font-size: 12px; font-weight: 700; text-decoration: none; margin: 0 0 8px; }
+.backlink:hover { color: #fff; }
+.backlink .ic { width: 15px; height: 15px; }
+.btn { transition: filter .2s, transform .12s, border-color .2s, background .2s; }
+.btn:active { transform: scale(.96); }
+.chip { transition: color .2s, border-color .2s, background .2s, transform .12s; }
+.chip:active { transform: scale(.94); }
+.row { transition: background .2s; }
+.thumb img, .mapthumb { transition: transform .3s; }
+.thumb:hover img { transform: scale(1.04); }
+
+@media (prefers-reduced-motion: reduce) {
+  .rev, #view { animation: none !important; }
+  .mapcard, .mc-img, .bnbtn, .btn, .chip { transition: none !important; }
+}
+
+/* ---------- мелкие дополнения v10 ---------- */
+.row-arrow .ic { width: 14px; height: 14px; }
+.more { display: inline-flex; align-items: center; gap: 4px; }
+.more .ic { width: 13px; height: 13px; }
+.grip { display: inline-grid; place-items: center; color: var(--dim); cursor: grab; }
+.grip .ic { width: 14px; height: 14px; }
+.linklike .ic { width: 14px; height: 14px; vertical-align: -3px; }
+.diagic { display: inline-grid; place-items: center; width: 16px; height: 16px; margin-right: 6px;
+  border-radius: 50%; vertical-align: -3px; }
+.diagic.ok { color: var(--green); background: rgba(85, 201, 144, .12); }
+.diagic.bad { color: var(--danger); background: rgba(228, 106, 106, .12); }
+.diagic .ic { width: 11px; height: 11px; }
+.checkrow { display: flex; align-items: center; gap: 10px; margin: 10px 0; padding: 10px 12px;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--panel-2);
+  font-size: 13px; font-weight: 600; cursor: pointer; }
+.checkrow input { width: 18px; height: 18px; accent-color: var(--accent); }
+.checkrow span { color: var(--text); }
+.chatlist { min-height: 40vh; }
+.mc-cap { font-size: 12px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase;
+  color: #e6ebf2; text-shadow: 0 2px 10px rgba(0, 0, 0, .85); }

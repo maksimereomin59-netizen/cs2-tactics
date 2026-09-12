@@ -17,6 +17,78 @@
   }[c]));
   const uid = (p) => (p || "x") + Math.random().toString(36).slice(2, 10);
   const clone = (v) => (v == null ? v : JSON.parse(JSON.stringify(v)));
+
+  /* ---------- иконки: строгие SVG вместо смайликов ---------- */
+  const ICON = {
+    grid: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
+    map: '<path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2-6-2z"/><path d="M9 4v14"/><path d="M15 6v14"/>',
+    target: '<circle cx="12" cy="12" r="7.5"/><circle cx="12" cy="12" r="3"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3"/>',
+    users: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
+    user: '<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>',
+    folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/>',
+    settings: '<path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3"/><path d="M1.5 14h5M9.5 8h5M17.5 16h5"/>',
+    chat: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
+    search: '<circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/>',
+    star: '<path d="m12 3 2.7 5.6 6.2.9-4.5 4.3 1.1 6.2-5.5-2.9-5.5 2.9 1.1-6.2L3.1 9.5l6.2-.9L12 3z"/>',
+    back: '<path d="M19 12H5"/><path d="m12 19-7-7 7-7"/>',
+    plus: '<path d="M12 5v14M5 12h14"/>',
+    edit: '<path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z"/>',
+    trash: '<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M10 11v6M14 11v6"/>',
+    copy: '<rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
+    undo: '<path d="M3 7v6h6"/><path d="M21 17a9 9 0 0 0-15-6.7L3 13"/>',
+    redo: '<path d="M21 7v6h-6"/><path d="M3 17a9 9 0 0 1 15-6.7L21 13"/>',
+    expand: '<path d="M15 3h6v6"/><path d="M9 21H3v-6"/><path d="M21 3l-7 7"/><path d="M3 21l7-7"/>',
+    collapse: '<path d="M4 14h6v6"/><path d="M20 10h-6V4"/><path d="M14 10l7-7"/><path d="M3 21l7-7"/>',
+    gridlines: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/>',
+    dash: '<path d="M12 4v3.5M12 10.5V14M12 17v3.5"/>',
+    bothends: '<path d="M7 8l-4 4 4 4"/><path d="M17 8l4 4-4 4"/><path d="M3 12h18"/>',
+    tag: '<path d="M20.6 13.4 12 22 2 12V2h10l8.6 8.6a2 2 0 0 1 0 2.8z"/><circle cx="7" cy="7" r="1.6"/>',
+    flag: '<path d="M4 22V4c4-2 8 2 12 0v12c-4 2-8-2-12 0"/>',
+    fan: '<circle cx="12" cy="12" r="2.2"/><path d="M5 5l4.2 4.2M19 5l-4.2 4.2M5 19l4.2-4.2M19 19l-4.2-4.2"/>',
+    save: '<path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8"/><path d="M7 3v5h8"/>',
+    upload: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M17 8l-5-5-5 5"/><path d="M12 3v12"/>',
+    download: '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/>',
+    logout: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="M16 17l5-5-5-5"/><path d="M21 12H9"/>',
+    send: '<path d="m22 2-11 11"/><path d="M22 2 15 22l-4-9-9-4 20-7z"/>',
+    mega: '<path d="M3 10v4a1 1 0 0 0 1 1h3l5 4V5L7 9H4a1 1 0 0 0-1 1z"/><path d="M16 8.5a5 5 0 0 1 0 7"/><path d="M18.5 6a8.5 8.5 0 0 1 0 12"/>',
+    smoke: '<path d="M17.5 19a4.5 4.5 0 0 0 .4-9A7 7 0 0 0 4.3 12.5 4 4 0 0 0 6 19h11.5z"/>',
+    molly: '<path d="M12 22c4.4 0 8-3.6 8-8 0-3.5-2-6.5-4-8.5-.5 2-1.5 3-2.5 3.5C13.8 6 13 3.5 10 2c.5 3-1 4.5-2.5 6.5C6 10.5 4 12 4 14c0 4.4 3.6 8 8 8z"/>',
+    flash: '<path d="M13 2 3 14h8l-1 8 11-14h-8l0-6z"/>',
+    he: '<circle cx="12" cy="12" r="4"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M19.1 4.9l-2.8 2.8M7.7 16.3l-2.8 2.8"/>',
+    decoy: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r=".8"/>',
+    bomb: '<circle cx="10.5" cy="13.5" r="6.5"/><path d="m15 9 2.2-2.2M18.6 5.4 17 3.8M18.6 5.4 20.2 7"/>',
+    cursor: '<path d="m3 3 7.5 18 2.5-7.5L20.5 11 3 3z"/>',
+    arrow: '<path d="M5 19 19 5"/><path d="M9 5h10v10"/>',
+    line: '<path d="M5 19 19 5"/>',
+    zone: '<circle cx="12" cy="12" r="8"/>',
+    hash: '<path d="M4 9h16M4 15h16M10 3 8 21M16 3l-2 18"/>',
+    text: '<path d="M4 7V5h16v2"/><path d="M12 5v14"/><path d="M9 19h6"/>',
+    eraser: '<path d="m7 21-4.6-4.6a2 2 0 0 1 0-2.8L13 3l8 8-10.6 10.6a2 2 0 0 1-1.4.4H7z"/><path d="M22 21H7"/>',
+    clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+    warn: '<path d="M10.3 3.8 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.8a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/>',
+    check: '<path d="M20 6 9 17l-5-5"/>',
+    x: '<path d="M18 6 6 18M6 6l12 12"/>',
+    dots: '<circle cx="12" cy="5" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="12" cy="19" r="1.3"/>',
+    image: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/>',
+    video: '<rect x="2" y="6" width="14" height="12" rx="2"/><path d="m22 8-6 4 6 4V8z"/>',
+    film: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M7 3v18M17 3v18M3 8h4M3 16h4M17 8h4M17 16h4"/>',
+    link: '<path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/>',
+    file: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/>',
+    note: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M8 13h8M8 17h5"/>',
+    crown: '<path d="m3 8 4 4 5-6 5 6 4-4v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V8z"/>',
+    chevron: '<path d="m9 18 6-6-6-6"/>',
+    pin: '<path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0z"/><circle cx="12" cy="10" r="3"/>',
+    grip: '<circle cx="9" cy="6" r="1.2"/><circle cx="15" cy="6" r="1.2"/><circle cx="9" cy="12" r="1.2"/><circle cx="15" cy="12" r="1.2"/><circle cx="9" cy="18" r="1.2"/><circle cx="15" cy="18" r="1.2"/>',
+  };
+  const ic = (name, cls) => '<svg class="ic' + (cls ? " " + cls : "") + '" viewBox="0 0 24 24" aria-hidden="true">' + (ICON[name] || ICON.dots) + "</svg>";
+  /** Мини-глиф гранаты для SVG-схемы (серьёзный значок вместо эмодзи). */
+  function nadeGlyph(kind, color) {
+    const d = ICON[kind] || ICON.bomb;
+    return '<g transform="scale(0.30) translate(-12,-12)" fill="none" stroke="' + color + '" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">' + d + "</g>";
+  }
+  /* Стаagger-появления блоков: revSeq сбрасывается в render(). */
+  let revSeq = 0;
+  const rcls = (base) => base + ' rev" style="--i:' + (revSeq++ % 10);
   const debounce = (fn, ms) => {
     let t = null;
     return (...args) => { clearTimeout(t); t = setTimeout(() => fn(...args), ms); };
@@ -91,19 +163,23 @@
     clearTimeout(saveTimer);
     if (!state) { el.hidden = true; return; }
     el.hidden = false;
-    if (state === "saving") { el.classList.remove("ok"); el.textContent = "Сохраняем…"; }
+    el.classList.remove("ok", "draft");
+    if (state === "saving") { el.textContent = "Сохраняем…"; }
     else if (state === "saved") {
-      el.classList.add("ok"); el.textContent = "✓ Сохранено";
+      el.classList.add("ok"); el.textContent = "Сохранено";
       saveTimer = setTimeout(() => { el.hidden = true; }, 2000);
+    } else if (state === "draft") {
+      el.classList.add("draft"); el.textContent = "Не сохранено";
     } else if (state === "offline") {
-      el.classList.remove("ok"); el.textContent = "Нет соединения";
+      el.textContent = "Нет соединения";
     }
   }
 
   /* ---------- экран входа: живое фото фоном ---------- */
   const AUTH_BG_KEY = "cs2pb.authbg.v1";
-  const AUTH_BG_DEFAULT = "assets/kabany.jpg";
-  const AUTH_BG_PREVIEW = "assets/kabany.small.jpg";
+  /* Постер команды «Кабаны» — основной фон: на входе и размытым на рабочих страницах. */
+  const AUTH_BG_DEFAULT = "assets/kabany-hero.jpg";
+  const AUTH_BG_PREVIEW = "assets/kabany-hero.small.jpg";
   /* localStorage — через window: в тестах (jsdom) голое имя недоступно. */
   const lsGet = (k) => { try { return window.localStorage.getItem(k); } catch (e) { return null; } };
   const lsSet = (k, v) => { try { window.localStorage.setItem(k, v); return true; } catch (e) { return false; } };
@@ -338,7 +414,7 @@
     S.sheetOpen = true;
     const root = $("#sheetRoot");
     root.innerHTML = '<div class="sheet" role="dialog"><div class="sheet-head"><h3>' + esc(title) +
-      '</h3><button class="iconbtn" data-close type="button">✕</button></div><div class="sheet-body">' +
+      '</h3><button class="iconbtn" data-close type="button" title="Закрыть">' + ic("x") + '</button></div><div class="sheet-body">' +
       bodyHTML + "</div>" + (footHTML ? '<div class="sheet-foot">' + footHTML + "</div>" : "") + "</div>";
     root.hidden = false;
     root.onclick = (e) => { if (e.target === root) closeSheet(); };
@@ -416,7 +492,7 @@
   /* ---------- fullscreen viewer ---------- */
   function openViewer(imgSrc, caption) {
     const root = $("#viewerRoot");
-    root.innerHTML = '<button class="iconbtn viewer-x" type="button">✕</button><div><img class="viewer-img" src="' +
+    root.innerHTML = '<button class="iconbtn viewer-x" type="button" title="Закрыть">' + ic("x") + '</button><div><img class="viewer-img" src="' +
       esc(imgSrc) + '" alt="' + esc(caption || "") + '">' + (caption ? '<div class="viewer-cap">' + esc(caption) + "</div>" : "") + "</div>";
     root.hidden = false;
     root.onclick = closeViewer;
@@ -429,6 +505,7 @@
   /* ---------- write helper with autosave indicator ---------- */
   async function commit(activityText, activityRef, fn) {
     if (!isCap()) { toast("Только капитан может изменять"); return null; }
+    await flushDrafts(); // черновики схемы не должны перезатереться общим сохранением
     saveState("saving");
     try {
       const res = await fn();
@@ -445,14 +522,15 @@
 
   /* ---------- shell ---------- */
   const NAV = [
-    { id: "overview", label: "Обзор", hash: "#/overview" },
-    { id: "maps", label: "Карты", hash: "#/maps" },
-    { id: "tactics", label: "Тактики", hash: "#/tactics" },
-    { id: "players", label: "Игроки", hash: "#/players" },
-    { id: "materials", label: "Материалы", hash: "#/materials" },
-    { id: "me", label: "Мой профиль", hash: "#/me" },
+    { id: "overview", label: "Обзор", hash: "#/overview", icon: "grid" },
+    { id: "maps", label: "Карты", hash: "#/maps", icon: "map" },
+    { id: "tactics", label: "Тактики", hash: "#/tactics", icon: "target" },
+    { id: "chat", label: "Чат", hash: "#/chat", icon: "chat" },
+    { id: "players", label: "Игроки", hash: "#/players", icon: "users" },
+    { id: "materials", label: "Материалы", hash: "#/materials", icon: "folder" },
+    { id: "me", label: "Мой профиль", hash: "#/me", icon: "user" },
   ];
-  const BOTTOM_NAV = ["overview", "maps", "tactics", "players"];
+  const BOTTOM_NAV = ["overview", "maps", "tactics", "chat", "players"];
 
   function currentNavId() {
     const p = parseHash()[0] || "";
@@ -479,16 +557,23 @@
     badge.textContent = isCap() ? "Капитан" : "Игрок";
     badge.classList.toggle("cap", isCap());
     paintNet();
+    const sb = $("#searchBtn");
+    if (sb && !sb.dataset.icon) { sb.innerHTML = ic("search"); sb.dataset.icon = "1"; }
+    const bg = $("#appBg");
+    if (bg) {
+      const want = 'url("' + authBgState().src + '")';
+      if (bg.style.backgroundImage !== want) bg.style.backgroundImage = want;
+    }
     const cur = currentNavId();
     $("#sideNav").innerHTML = NAV.map((n) =>
-      '<a class="snlink' + (cur === n.id ? " on" : "") + '" href="' + n.hash + '">' + esc(n.label) + "</a>"
-    ).join("") + '<a class="snlink' + (cur === "manage" ? " on" : "") + '" href="#/manage">⚙ Управление</a>';
+      '<a class="snlink' + (cur === n.id ? " on" : "") + '" href="' + n.hash + '">' + ic(n.icon) + "<span>" + esc(n.label) + "</span></a>"
+    ).join("") + '<a class="snlink' + (cur === "manage" ? " on" : "") + '" href="#/manage">' + ic("settings") + "<span>Управление</span></a>";
     $("#sideFoot").innerHTML = esc(DB.mode() === "cloud" ? "Облако: синхронизация включена" : "Локальный режим: облако не подключено") +
-      '<br><a href="#/manage" style="color:var(--muted)">Настройки →</a>';
+      '<br><a href="#/manage" style="color:var(--muted)">Открыть настройки</a>';
     $("#bottomNav").innerHTML = BOTTOM_NAV.map((id) => {
       const n = NAV.find((x) => x.id === id);
-      return '<a class="bnbtn' + (cur === id ? " on" : "") + '" href="' + n.hash + '">' + esc(n.label) + "</a>";
-    }).join("") + '<button class="bnbtn' + ((cur === "materials" || cur === "me" || cur === "manage") ? " on" : "") + '" data-more type="button">Ещё</button>';
+      return '<a class="bnbtn' + (cur === id ? " on" : "") + '" href="' + n.hash + '">' + ic(n.icon) + "<span>" + esc(n.label) + "</span></a>";
+    }).join("") + '<button class="bnbtn' + ((cur === "materials" || cur === "me" || cur === "manage") ? " on" : "") + '" data-more type="button">' + ic("dots") + "<span>Ещё</span></button>";
     $("[data-more]").onclick = openMore;
   }
 
@@ -505,17 +590,19 @@
 
   function openMore() {
     openSheet("Ещё", '<div class="sec" style="margin-top:10px"><div class="sec-body">' +
-      rowHTML("#/materials", "Материалы", DB.cache.materials.length + " шт.") +
-      rowHTML("#/me", "Мой профиль", myName() || "Выбрать себя") +
-      rowHTML("#/manage", "⚙ Управление", isCap() ? "Панель капитана" : "Вход для капитана") +
+      rowHTML("#/materials", "Материалы", DB.cache.materials.length + " шт.", "folder") +
+      rowHTML("#/me", "Мой профиль", myName() || "Выбрать себя", "user") +
+      rowHTML("#/manage", "Управление", isCap() ? "Панель капитана" : "Вход для капитана", "settings") +
       "</div></div>" +
-      '<div class="btnrow"><button class="btn ghost block" data-logout type="button">Выйти из команды</button></div>', "");
+      '<div class="btnrow"><button class="btn ghost block" data-logout type="button">' + ic("logout") + " Выйти из команды</button></div>", "");
     $$("[data-goto]").forEach((a) => { a.onclick = closeSheet; });
     $("[data-logout]").onclick = () => { closeSheet(); doLogout(); };
   }
-  function rowHTML(hash, title, sub) {
-    return '<a class="row" data-goto href="' + hash + '"><span class="row-main"><b>' + esc(title) + "</b>" +
-      (sub ? "<small>" + esc(sub) + "</small>" : "") + '</span><span class="row-arrow">›</span></a>';
+  function rowHTML(hash, title, sub, icon) {
+    return '<a class="row" data-goto href="' + hash + '">' +
+      (icon ? '<span class="matic">' + ic(icon) + "</span>" : "") +
+      '<span class="row-main"><b>' + esc(title) + "</b>" +
+      (sub ? "<small>" + esc(sub) + "</small>" : "") + '</span><span class="row-arrow">' + ic("chevron") + "</span></a>";
   }
   function myName() {
     const me = playerById(DB.myPlayerId());
@@ -548,7 +635,7 @@
       }
       res.innerHTML = list.map((r) =>
         '<button class="row" data-kind="' + r.kind + '" data-id="' + esc(r.id) + '" type="button"><span class="row-main"><b>' +
-        esc(r.title) + "</b><small>" + esc(r.sub || "") + "</small></span><span class=\"row-arrow\">›</span></button>"
+        esc(r.title) + "</b><small>" + esc(r.sub || "") + "</small></span><span class=\"row-arrow\">" + ic("chevron") + "</span></button>"
       ).join("");
       $$(".row", res).forEach((b) => {
         b.onclick = () => { close(); openRef(b.dataset.kind, b.dataset.id); };
@@ -571,6 +658,7 @@
     S.boardSel = null;
     S.boardFrom = null;
     S.boardWait = null;
+    flushDrafts(); // несохранённая схема уезжает в базу до смены экрана
     const logged = !!DB.team;
     const p = parseHash();
     if (!logged) {
@@ -589,12 +677,14 @@
     const y = preserveScroll === false ? 0 : window.scrollY;
     const p = parseHash();
     const id = p[0] || "overview";
+    revSeq = 0;
     paintShell();
     if (id === "overview" || id === "") viewOverview();
     else if (id === "maps") viewMaps();
     else if (id === "map") viewMap(p[1]);
-    else if (id === "tactics") viewTactics();
+    else if (id === "tactics") viewTactics(p[1]);
     else if (id === "tactic") viewTactic(p[1]);
+    else if (id === "chat") viewChat();
     else if (id === "players") viewPlayers();
     else if (id === "player") viewPlayer(p[1]);
     else if (id === "me" || id === "who") viewMe();
@@ -622,7 +712,7 @@
       "<b>TEAM PLAYBOOK</b><small>Тактики, роли, раскидки — один вход на всю команду</small></span></div>";
   }
   function authFootHTML() {
-    return '<div class="authfoot"><button class="linklike" data-authbgbtn type="button">🖼 Фото на входе</button></div>';
+    return '<div class="authfoot"><button class="linklike" data-authbgbtn type="button">' + ic("image") + ' Фото на входе</button></div>';
   }
   function wireAuthFoot() {
     const btn = $("[data-authbgbtn]");
@@ -844,14 +934,20 @@
     const favs = DB.favs().slice(0, 8);
     const feed = DB.cache.activity.slice(0, 8);
 
-    let html = '<div class="pagehead"><div><h1>' + esc(DB.team.name) + "</h1>" +
-      '<p class="sub">' + (me ? "Привет, " + esc(me.name) : "Обзор команды") + " · " + DB.cache.players.length + " игр. · " +
-      DB.cache.maps.length + " карт · " + DB.cache.tactics.length + " такт.</p></div>" +
-      (isCap() ? '<div class="actions"><button class="btn tiny" data-newtactic type="button">+ Тактика</button></div>' : "") + "</div>";
+    let html = '<div class="' + rcls("pagehead") + '"><div><h1>' + esc(DB.team.name) + "</h1>" +
+      '<p class="sub">' + (me ? "Привет, " + esc(me.name) : "Обзор команды") + "</p></div>" +
+      (isCap() ? '<div class="actions"><button class="btn tiny" data-newtactic type="button">' + ic("plus") + " Тактика</button></div>" : "") + "</div>";
+
+    html += '<div class="' + rcls("statchips") + '">' +
+      '<a class="statchip" href="#/players">' + ic("users") + "<b>" + DB.cache.players.length + "</b> игроков</a>" +
+      '<a class="statchip" href="#/maps">' + ic("map") + "<b>" + DB.cache.maps.length + "</b> карт</a>" +
+      '<a class="statchip" href="#/tactics">' + ic("target") + "<b>" + DB.cache.tactics.length + "</b> тактик</a>" +
+      '<a class="statchip" href="#/chat">' + ic("chat") + "Чат команды</a>" +
+      "</div>";
 
     html += '<div class="ovgrid two">';
     // Состав
-    html += '<div class="sec"><div class="sec-head"><h2>Состав</h2><button class="more" data-go="#/players" type="button">Все ›</button></div><div class="rosterchips">';
+    html += '<div class="' + rcls("sec") + '"><div class="sec-head"><h2>' + ic("users") + 'Состав</h2><button class="more" data-go="#/players" type="button">' + ic("chevron") + ' Все</button></div><div class="rosterchips">';
     if (!DB.cache.players.length) html += '<div class="empty">Пока пусто.</div>';
     DB.cache.players.forEach((p) => {
       html += '<a class="rchip" style="--pc:' + esc(p.color || "#e8a72f") + '" href="#/player/' + p.id + '">' + esc(p.name) +
@@ -862,11 +958,11 @@
     // Мой профиль / выбор себя
     if (me) {
       const inv = involvement(me.id);
-      html += '<div class="sec"><div class="sec-head"><h2>Твой профиль</h2><button class="more" data-go="#/me" type="button">Открыть ›</button></div><div class="sec-pad">' +
+      html += '<div class="' + rcls("sec") + '"><div class="sec-head"><h2>' + ic("user") + 'Твой профиль</h2><button class="more" data-go="#/me" type="button">' + ic("chevron") + ' Открыть</button></div><div class="sec-pad">' +
         "<div><b>" + esc(me.name) + "</b>" + (me.role ? ' · <span class="muted">' + esc(me.role) + "</span>" : "") + "</div>" +
         '<div class="tiny muted">Тактики: ' + inv.tactics.length + " · Задачи: " + inv.tasks.length + " · Гранаты: " + inv.nades.length + "</div></div></div>";
     } else if (DB.cache.players.length) {
-      html += '<div class="sec"><div class="sec-head"><h2>Кто ты?</h2></div><div class="sec-pad"><div class="btnrow" style="margin-top:0">';
+      html += '<div class="' + rcls("sec") + '"><div class="sec-head"><h2>' + ic("user") + 'Кто ты?</h2></div><div class="sec-pad"><div class="btnrow" style="margin-top:0">';
       DB.cache.players.forEach((p) => {
         html += '<button class="btn ghost tiny" data-pick="' + p.id + '" type="button">' + esc(p.name) + "</button>";
       });
@@ -874,16 +970,16 @@
     }
 
     // Быстрый доступ к картам
-    html += '<div class="sec"><div class="sec-head"><h2>Карты</h2><button class="more" data-go="#/maps" type="button">Все ›</button></div><div class="sec-body">';
+    html += '<div class="' + rcls("sec") + '"><div class="sec-head"><h2>' + ic("map") + 'Карты</h2><button class="more" data-go="#/maps" type="button">' + ic("chevron") + ' Все</button></div><div class="sec-body">';
     if (!DB.cache.maps.length) html += '<div class="empty">Карт пока нет.</div>';
     maps.forEach((m) => {
       html += '<a class="row" href="#/map/' + m.id + '">' + mapThumb(m, 52) + '<span class="row-main"><b>' + esc(m.name) +
-        "</b><small>" + tacticsOfMap(m.id).length + " такт.</small></span><span class=\"row-arrow\">›</span></a>";
+        "</b><small>" + tacticsOfMap(m.id).length + ' такт.</small></span><span class="row-arrow">' + ic("chevron") + "</span></a>";
     });
     html += "</div></div>";
 
     // Активные тактики (недавно обновлённые)
-    html += '<div class="sec"><div class="sec-head"><h2>Активные тактики</h2><button class="more" data-go="#/tactics" type="button">Все ›</button></div><div class="sec-body">';
+    html += '<div class="' + rcls("sec") + '"><div class="sec-head"><h2>' + ic("target") + 'Активные тактики</h2><button class="more" data-go="#/tactics" type="button">' + ic("chevron") + ' Все</button></div><div class="sec-body">';
     if (!recentTactics.length) html += '<div class="empty">Тактик пока нет.</div>';
     recentTactics.forEach((t) => {
       const m = mapById(t.map_id);
@@ -893,16 +989,16 @@
 
     // Избранное
     if (favs.length) {
-      html += '<div class="sec"><div class="sec-head"><h2>★ Избранное</h2></div><div class="sec-body">';
+      html += '<div class="' + rcls("sec") + '"><div class="sec-head"><h2>' + ic("star") + 'Избранное</h2></div><div class="sec-body">';
       favs.forEach((f) => {
         html += '<button class="row" data-favgo="' + f.kind + ":" + esc(f.id) + '" type="button"><span class="row-main"><b>' + esc(f.title) +
-          "</b><small>" + esc(favKindName(f.kind)) + "</small></span><span class=\"row-arrow\">›</span></button>";
+          "</b><small>" + esc(favKindName(f.kind)) + '</small></span><span class="row-arrow">' + ic("chevron") + "</span></button>";
       });
       html += "</div></div>";
     }
 
     // Последние изменения
-    html += '<div class="sec"><div class="sec-head"><h2>Последние изменения</h2></div><div class="sec-body">';
+    html += '<div class="' + rcls("sec") + '"><div class="sec-head"><h2>' + ic("clock") + 'Последние изменения</h2></div><div class="sec-body">';
     if (!feed.length) html += '<div class="empty">Пока тихо.</div>';
     feed.forEach((a) => { html += activityRowHTML(a); });
     html += "</div></div>";
@@ -932,9 +1028,9 @@
   }
 
   function tacticRowHTML(t, m) {
-    return '<a class="row" href="#/tactic/' + t.id + '"><span class="row-main"><b>' + esc(t.name) + "</b><small>" +
+    return '<a class="' + rcls("row") + '" href="#/tactic/' + t.id + '"><span class="row-main"><b>' + esc(t.name) + "</b><small>" +
       esc((m ? m.name + " · " : "") + (t.category || "Тактика")) + "</small></span>" +
-      '<span class="row-side">' + sideBadge(t.side) + '<span class="row-arrow">›</span></span></a>';
+      '<span class="row-side">' + sideBadge(t.side) + '<span class="row-arrow">' + ic("chevron") + "</span></span></a>";
   }
   function activityRowHTML(a) {
     const clickable = a.ref_kind && a.ref_id;
@@ -951,22 +1047,58 @@
     return '<span class="mapthumb" style="display:inline-block"></span>';
   }
 
+  /* ---------- обложки карт ---------- */
+  const MAP_ART = {
+    mirage: "assets/maps/cards/mirage.jpg",
+    ancient: "assets/maps/cards/ancient.jpg",
+    dust2: "assets/maps/cards/dust2.jpg",
+  };
+  function mapSlug(name) {
+    const s = String(name || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+    if (s.indexOf("mirage") >= 0) return "mirage";
+    if (s.indexOf("ancient") >= 0) return "ancient";
+    if (s.indexOf("dust") >= 0) return "dust2";
+    return "";
+  }
+  /** Фото карты: своё (загрузил капитан) → встроенная обложка → радар. */
+  function mapArt(m) {
+    if (!m) return "";
+    if (m.photo) return m.photo;
+    return MAP_ART[mapSlug(m.name)] || "";
+  }
+  function mapCardHTML(m, href, opts) {
+    opts = opts || {};
+    const art = mapArt(m);
+    const baked = !m.photo && !!MAP_ART[mapSlug(m.name)]; // имя уже вплавлено в обложку
+    const n = tacticsOfMap(m.id).length;
+    let h = '<a class="' + rcls("mapcard" + (art ? "" : " noart")) + '" href="' + href + '">' +
+      (art ? '<img class="mc-img" src="' + esc(art) + '" alt="" loading="lazy">' : "") +
+      '<span class="mc-scrim"></span>' +
+      (baked ? "" : '<span class="mc-name">' + esc(m.name) + "</span>") +
+      '<span class="mc-body"><span class="mc-cap">' + esc(m.name) + '</span><span class="mc-meta">' + ic("target") + n + " такт.</span></span>";
+    if (opts.tools) {
+      h += '<span class="mc-tools">' +
+        '<button class="starbtn' + (DB.isFav("map", m.id) ? " on" : "") + '" data-fav="map:' + m.id + '" type="button" title="В избранное">' + ic("star") + "</button>" +
+        (isCap() ? '<button class="menubtn" data-mapmenu="' + m.id + '" type="button" title="Действия">' + ic("dots") + "</button>" : "") +
+        "</span>";
+    }
+    return h + "</a>";
+  }
+
   /* ---------- maps ---------- */
   function viewMaps() {
     const view = $("#view");
-    let html = '<div class="pagehead"><div><h1>Карты</h1><p class="sub">' + DB.cache.maps.length + " шт. · откройте карту, затем тактику</p></div>" +
-      (isCap() ? '<div class="actions"><button class="btn tiny" data-addmap type="button">+ Карта</button></div>' : "") + "</div>";
-    html += '<div class="sec"><div class="sec-body">';
-    if (!DB.cache.maps.length) html += '<div class="empty">Карт пока нет.' + (isCap() ? " Добавьте первую." : "") + "</div>";
-    DB.cache.maps.forEach((m) => {
-      const n = tacticsOfMap(m.id).length;
-      html += '<div class="row" style="cursor:default"><a class="row-main" style="display:flex;gap:10px;align-items:center;text-decoration:none;flex:1;min-width:0" href="#/map/' + m.id + '">' +
-        mapThumb(m, 52) + '<span style="min-width:0"><b style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(m.name) +
-        "</b><small class=\"muted\">" + n + " такт.</small></span></a>" +
-        '<span class="row-side"><button class="starbtn' + (DB.isFav("map", m.id) ? " on" : "") + '" data-fav="map:' + m.id + '" type="button">★</button>' +
-        (isCap() ? '<button class="menubtn" data-mapmenu="' + m.id + '" type="button">⋮</button>' : '<a class="row-arrow" href="#/map/' + m.id + '" style="text-decoration:none">›</a>') + "</span></div>";
-    });
-    html += "</div></div>";
+    let html = '<div class="' + rcls("pagehead") + '"><div><h1>Карты</h1><p class="sub">' +
+      DB.cache.maps.length + " шт. · откройте карту, чтобы смотреть тактики и схемы</p></div>" +
+      (isCap() ? '<div class="actions"><button class="btn tiny" data-addmap type="button">' + ic("plus") + " Карта</button></div>" : "") + "</div>";
+    if (!DB.cache.maps.length) {
+      html += '<div class="' + rcls("sec") + '"><div class="sec-pad"><div class="empty">Карт пока нет.' +
+        (isCap() ? " Добавьте первую." : "") + "</div></div></div>";
+    } else {
+      html += '<div class="mapgrid">';
+      DB.cache.maps.forEach((m) => { html += mapCardHTML(m, "#/map/" + m.id, { tools: true }); });
+      html += "</div>";
+    }
     view.innerHTML = html;
     const add = $("[data-addmap]", view);
     if (add) add.onclick = () => sheetMap(null);
@@ -1015,16 +1147,21 @@
     if (!m) { go("#/maps"); return; }
     const tT = tacticsOfMap(id, "T"), tCT = tacticsOfMap(id, "CT"), tAny = tacticsOfMap(id, "ANY");
     const mats = DB.cache.materials.filter((x) => x.map_id === id);
-    let html = '<a class="backlink" href="#/maps">← Карты</a><div class="pagehead"><div><h1>' + esc(m.name) + "</h1>" +
-      '<p class="sub">' + (tT.length + tCT.length + tAny.length) + " такт. · " + mats.length + " матер.</p></div>" +
-      '<div class="actions"><button class="starbtn' + (DB.isFav("map", m.id) ? " on" : "") + '" data-fav type="button" style="font-size:20px">★</button>' +
-      (isCap() ? '<button class="btn tiny" data-addt type="button">+ Тактика</button><button class="menubtn" data-mm type="button">⋮</button>' : "") + "</div></div>";
-    if (m.image) html += '<div class="sec"><div class="thumbs" style="padding:12px"><button class="thumb" data-full type="button"><img src="' + esc(m.image) + '" alt=""><span>Открыть карту</span></button></div></div>';
+    const art = mapArt(m);
+    let html = '<a class="backlink" href="#/maps">' + ic("back") + " Карты</a>";
+    html += '<div class="' + rcls("maphero") + '"' + (art ? ' style="background-image:url(\'' + esc(art).replace(/'/g, "%27") + '\')"' : "") + ">" +
+      "<h1>" + esc(m.name) + "</h1>" +
+      '<p class="sub">' + (tT.length + tCT.length + tAny.length) + " такт. · " + mats.length + " матер.</p></div>";
+    html += '<div class="' + rcls("pagehead") + '"><div></div><div class="actions">' +
+      '<button class="starbtn' + (DB.isFav("map", m.id) ? " on" : "") + '" data-fav type="button" title="В избранное">' + ic("star") + "</button>" +
+      (isCap() ? '<button class="btn tiny" data-addt type="button">' + ic("plus") + " Тактика</button>" +
+        '<button class="menubtn" data-mm type="button" title="Действия">' + ic("dots") + "</button>" : "") + "</div></div>";
+    if (m.image) html += '<div class="' + rcls("sec") + '"><div class="thumbs" style="padding:12px"><button class="thumb" data-full type="button"><img src="' + esc(m.image) + '" alt=""><span>Открыть радар</span></button></div></div>';
     html += sideSection("Сторона T", tT, m);
     html += sideSection("Сторона CT", tCT, m);
     if (tAny.length) html += sideSection("Обе стороны", tAny, m);
     if (mats.length) {
-      html += '<div class="sec"><div class="sec-head"><h2>Материалы карты</h2></div><div class="sec-body">';
+      html += '<div class="' + rcls("sec") + '"><div class="sec-head"><h2>' + ic("folder") + 'Материалы карты</h2></div><div class="sec-body">';
       mats.forEach((x) => { html += materialRowHTML(x, true); });
       html += "</div></div>";
     }
@@ -1040,7 +1177,7 @@
   }
 
   function sideSection(title, list, m) {
-    let html = '<div class="sec"><div class="sec-head"><h2>' + esc(title) + " · " + list.length + "</h2></div><div class=\"sec-body\">";
+    let html = '<div class="' + rcls("sec") + '"><div class="sec-head"><h2>' + esc(title) + " · " + list.length + "</h2></div><div class=\"sec-body\">";
     if (!list.length) html += '<div class="empty">Пусто.</div>';
     list.forEach((t) => { html += tacticRowHTML(t, m); });
     return html + "</div></div>";
@@ -1048,45 +1185,53 @@
 
   /* ---------- tactics list + filters ---------- */
   const CATEGORIES = ["Execute", "Default", "Retake", "Split", "Control", "Utility", "Pistol", "Eco", "Force"];
-  function viewTactics() {
+  /** Без карты — витрина выбора карты крупными фото; с картой — тактики этой карты. */
+  function viewTactics(mapId) {
     const view = $("#view");
     const f = S.tfilter;
+    if (!mapId) {
+      let html = '<div class="' + rcls("pagehead") + '"><div><h1>Тактики</h1><p class="sub">Выберите карту — внутри тактики и схемы стороны</p></div>' +
+        (isCap() ? '<div class="actions"><button class="btn tiny" data-newt type="button">' + ic("plus") + " Тактика</button></div>" : "") + "</div>";
+      if (!DB.cache.maps.length) {
+        html += '<div class="' + rcls("sec") + '"><div class="sec-pad"><div class="empty">Карт пока нет.' +
+          (isCap() ? " Добавьте карту в разделе «Карты»." : "") + "</div></div></div>";
+      } else {
+        html += '<div class="mapgrid">';
+        DB.cache.maps.forEach((m) => { html += mapCardHTML(m, "#/tactics/" + m.id, {}); });
+        html += "</div>";
+      }
+      view.innerHTML = html;
+      const nt0 = $("[data-newt]", view);
+      if (nt0) nt0.onclick = () => sheetNewTactic(null);
+      return;
+    }
+    const m = mapById(mapId);
+    if (!m) { go("#/tactics"); return; }
     const cats = [];
     DB.cache.tactics.forEach((t) => { if (t.category && cats.indexOf(t.category) < 0) cats.push(t.category); });
-    let html = '<div class="pagehead"><div><h1>Тактики</h1><p class="sub">' + DB.cache.tactics.length + " шт.</p></div>" +
-      (isCap() ? '<div class="actions"><button class="btn tiny" data-newt type="button">+ Тактика</button></div>' : "") + "</div>";
-    // Фильтры: карта
-    html += '<div class="chiprow"><button class="chip' + (!f.map ? " on" : "") + '" data-f="map:" type="button">Все карты</button>';
-    DB.cache.maps.forEach((m) => {
-      html += '<button class="chip' + (f.map === m.id ? " on" : "") + '" data-f="map:' + m.id + '" type="button">' + esc(m.name) + "</button>";
-    });
-    html += "</div>";
+    const art = mapArt(m);
+    let html = '<a class="backlink" href="#/tactics">' + ic("back") + " Выбор карты</a>";
+    html += '<div class="' + rcls("maphero") + '"' + (art ? ' style="background-image:url(\'' + esc(art).replace(/'/g, "%27") + '\')"' : "") + ">" +
+      "<h1>" + esc(m.name) + "</h1>" +
+      '<p class="sub">' + tacticsOfMap(m.id).length + " такт. на карте</p></div>";
+    html += '<div class="' + rcls("pagehead") + '"><div></div><div class="actions">' +
+      (isCap() ? '<button class="btn tiny" data-newt type="button">' + ic("plus") + " Тактика</button>" : "") + "</div></div>";
     // Фильтры: сторона + категория
-    html += '<div class="chiprow"><button class="chip' + (!f.side ? " on" : "") + '" data-f="side:" type="button">T/CT</button>' +
+    html += '<div class="' + rcls("chiprow") + '"><button class="chip' + (!f.side ? " on" : "") + '" data-f="side:" type="button">T/CT</button>' +
       '<button class="chip' + (f.side === "T" ? " on" : "") + '" data-f="side:T" type="button">T</button>' +
       '<button class="chip' + (f.side === "CT" ? " on" : "") + '" data-f="side:CT" type="button">CT</button></div>';
     if (cats.length) {
-      html += '<div class="chiprow"><button class="chip' + (!f.cat ? " on" : "") + '" data-f="cat:" type="button">Все типы</button>';
+      html += '<div class="' + rcls("chiprow") + '"><button class="chip' + (!f.cat ? " on" : "") + '" data-f="cat:" type="button">Все типы</button>';
       cats.forEach((c) => {
         html += '<button class="chip' + (f.cat === c ? " on" : "") + '" data-f="cat:' + esc(c) + '" type="button">' + esc(c) + "</button>";
       });
       html += "</div>";
     }
     const list = DB.cache.tactics.filter((t) =>
-      (!f.map || t.map_id === f.map) && (!f.side || t.side === f.side || t.side === "ANY") && (!f.cat || t.category === f.cat));
-    html += '<div class="sec"><div class="sec-body">';
-    if (!list.length) html += '<div class="empty">Ничего не найдено. Попробуйте смягчить фильтры.</div>';
-    // Группируем по картам для читаемости.
-    const groups = {};
-    list.forEach((t) => {
-      const key = t.map_id || "none";
-      (groups[key] = groups[key] || []).push(t);
-    });
-    Object.keys(groups).forEach((key) => {
-      const m = mapById(key);
-      if (!f.map) html += '<div class="sec-head"><h2>' + esc(m ? m.name : "Без карты") + "</h2></div>";
-      groups[key].forEach((t) => { html += tacticRowHTML(t, m); });
-    });
+      t.map_id === m.id && (!f.side || t.side === f.side || t.side === "ANY") && (!f.cat || t.category === f.cat));
+    html += '<div class="' + rcls("sec") + '"><div class="sec-body">';
+    if (!list.length) html += '<div class="empty">На этой карте тактик пока нет.' + (isCap() ? " Добавьте первую." : "") + "</div>";
+    list.forEach((t) => { html += tacticRowHTML(t, m); });
     html += "</div></div>";
     view.innerHTML = html;
     $$("[data-f]", view).forEach((b) => {
@@ -1097,7 +1242,7 @@
       };
     });
     const nt = $("[data-newt]", view);
-    if (nt) nt.onclick = () => sheetNewTactic(f.map || null);
+    if (nt) nt.onclick = () => sheetNewTactic(m.id);
   }
 
   /* ---------- new / edit tactic ---------- */
@@ -1193,6 +1338,7 @@
     if (!isCap()) return;
     const isNew = !m;
     m = m || { name: "", image: "" };
+    let photo = m.photo || "";
     const presets = [
       ["", "Без изображения"],
       ["assets/maps/mirage.png", "Mirage (встроенный радар)"],
@@ -1201,6 +1347,11 @@
     ];
     openSheet(isNew ? "Новая карта" : "Изменить карту",
       '<label class="field"><span>Название</span><input id="mpName" maxlength="40" value="' + esc(m.name) + '" placeholder="Mirage"></label>' +
+      '<div class="field"><span>Фото карты (обложка)</span>' +
+      '<div class="bgprev" style="margin-bottom:8px"><img id="mpPrev" src="' + esc(photo || mapArt(m) || "assets/maps/mirage.png") + '" alt="" style="max-height:120px;width:100%;object-fit:cover;border-radius:10px;border:1px solid var(--border-2)"></div>' +
+      '<div class="btnrow" style="margin-top:0"><button class="btn ghost tiny" data-mppick type="button">' + ic("upload") + " Загрузить фото</button>" +
+      '<button class="btn ghost tiny" data-mpclear type="button"' + (photo ? "" : " disabled") + ">Сбросить на стандарт</button></div>" +
+      '<input type="file" accept="image/*" hidden id="mpFile"></div>' +
       '<label class="field"><span>Изображение радара</span><select id="mpPreset">' +
       presets.map((p) => '<option value="' + p[0] + '"' + (m.image === p[0] ? " selected" : "") + ">" + p[1] + "</option>").join("") +
       '<option value="__custom">Своя ссылка…</option></select></label>' +
@@ -1210,21 +1361,33 @@
     const syncCustom = () => { $("#mpCustomWrap").hidden = preset.value !== "__custom"; };
     preset.onchange = syncCustom;
     if (m.image && !presets.some((p) => p[0] === m.image)) { preset.value = "__custom"; syncCustom(); }
+    const prev = $("#mpPrev");
+    $("#mpFile").onchange = (e) => {
+      const file = e.target.files && e.target.files[0];
+      if (!file) return;
+      fileToDataUrl(file).then((url) => shrinkDataUrl(url, 1000, 0.72)).then((small) => {
+        photo = small;
+        prev.src = small;
+        const clr = $("[data-mpclear]"); if (clr) clr.disabled = false;
+      }).catch(() => toast("Не удалось прочитать файл", "warn"));
+    };
+    $("[data-mppick]").onclick = () => $("#mpFile").click();
+    $("[data-mpclear]").onclick = (e) => { photo = ""; prev.src = mapArt({ name: $("#mpName").value }) || "assets/maps/mirage.png"; e.currentTarget.disabled = true; };
     $("[data-x]").onclick = closeSheet;
     $("[data-ok]").onclick = async () => {
       const name = $("#mpName").value.trim();
       if (!name) return;
       const image = preset.value === "__custom" ? $("#mpCustom").value.trim() : preset.value;
-      const payload = { name, image };
+      const payload = { name, image, photo };
       if (!isNew) payload.id = m.id;
       const saved = await commit(isNew ? 'добавил карту «' + name + "»" : 'изменил карту «' + name + "»", isNew ? null : { kind: "map", id: m.id }, () => DB.save("maps", payload));
-      if (saved) { closeSheet(); if (isNew) go("#/map/" + saved.id); }
+      if (saved) { closeSheet(); if (isNew) go("#/map/" + saved.id); else render(); }
     };
   }
 
   /* ---------- tactic detail ---------- */
   const BLOCK_NAMES = { roster: "Состав", tasks: "Задачи", grenades: "Гранаты", board: "Схема", image: "Изображения", video: "Видео", note: "Заметки" };
-  const NADE_ICON = { smoke: "💨", molly: "🔥", flash: "⚡", he: "💥", decoy: "🎯" };
+  const NADE_ICON = { smoke: "smoke", molly: "molly", flash: "flash", he: "he", decoy: "decoy" };
   const NADE_NAME = { smoke: "Смouk", molly: "Молотов", flash: "Флешка" };
   const NADE_NAMES = { smoke: "Смоук", molly: "Молотов", flash: "Флешка", he: "Хешка", decoy: "Обманка" };
   function nadeName(k) { return NADE_NAMES[k] || "Граната"; }
@@ -1234,12 +1397,16 @@
     const view = $("#view");
     if (!t) { go("#/tactics"); return; }
     const m = mapById(t.map_id);
-    let html = '<a class="backlink" href="' + (m ? "#/map/" + m.id : "#/tactics") + '">← ' + esc(m ? m.name : "Тактики") + "</a>";
-    html += '<div class="pagehead"><div><h1>' + esc(t.name) + "</h1>" +
+    let html = '<a class="backlink" href="' + (m ? "#/tactics/" + m.id : "#/tactics") + '">' + ic("back") + " " + esc(m ? m.name : "Тактики") + "</a>";
+    html += '<div class="' + rcls("pagehead") + '"><div><h1>' + esc(t.name) + "</h1>" +
       '<p class="sub">' + esc([m ? m.name : null, t.side === "ANY" ? "T/CT" : t.side, t.category || null].filter(Boolean).join(" / ")) +
       (t.updated_at ? " · обновлено " + fmtRel(t.updated_at) : "") + "</p></div>" +
-      '<div class="actions"><button class="starbtn' + (DB.isFav("tactic", t.id) ? " on" : "") + '" data-fav type="button" style="font-size:20px">★</button>' +
-      (isCap() ? '<button class="menubtn" data-tmenu type="button">⋮</button>' : "") + "</div></div>";
+      '<div class="actions"><button class="starbtn' + (DB.isFav("tactic", t.id) ? " on" : "") + '" data-fav type="button" title="В избранное">' + ic("star") + "</button>" +
+      (isCap() ? '<button class="menubtn" data-tmenu type="button" title="Действия">' + ic("dots") + "</button>" : "") + "</div></div>";
+    if (isCap() && (S.draft || {})[t.id]) {
+      html += '<div class="draftbar">' + ic("warn") + "<span>Есть несохранённые правки схемы</span>" +
+        '<button class="btn tiny" data-savenow type="button">' + ic("save") + " Сохранить</button></div>";
+    }
 
     if (t.description || isCap()) {
       html += '<div class="sec"><div class="sec-head"><h2>Описание</h2>' +
@@ -1265,6 +1432,8 @@
     view.innerHTML = html;
 
     $("[data-fav]", view).onclick = () => { DB.toggleFav("tactic", t.id, t.name); render(); };
+    const sn = $("[data-savenow]", view);
+    if (sn) sn.onclick = async () => { await flushDrafts(); render(); toast("Сохранено", "ok"); };
     const tm = $("[data-tmenu]", view);
     if (tm) tm.onclick = (e) => { e.stopPropagation(); tacticMenu(tm, t); };
     const ed = $("[data-editdesc]", view);
@@ -1324,9 +1493,9 @@
     else if (b.type === "note") inner = notesHTML(b);
     else inner = '<div class="empty">Неизвестный блок.</div>';
     return '<div class="block' + (b.hidden ? " hiddenblock" : "") + '" data-block="' + b.id + '">' +
-      '<div class="block-head">' + (isCap() ? '<span class="grip" data-grip title="Тяните, чтобы переместить">⠿</span>' : "") +
+      '<div class="block-head">' + (isCap() ? '<span class="grip" data-grip title="Тяните, чтобы переместить">' + ic("grip") + '</span>' : "") +
       "<h3>" + esc(title) + (b.hidden ? " · скрыт" : "") + "</h3>" +
-      (isCap() ? '<button class="menubtn" data-bmenu="' + b.id + '" type="button">⋮</button>' : "") + "</div>" +
+      (isCap() ? '<button class="menubtn" data-bmenu="' + b.id + '" type="button" title="Действия">' + ic("dots") + '</button>' : "") + "</div>" +
       '<div class="block-body">' + inner + "</div></div>";
   }
   function playerChip(pid) {
@@ -1352,7 +1521,7 @@
   function nadesHTML(b) {
     if (!(b.items || []).length) return '<div class="empty">Гранаты не добавлены.</div>';
     return (b.items || []).map((it) =>
-      '<div class="nade"><div>' + (NADE_ICON[it.kind] || "•") + " <b>" + esc(it.name || nadeName(it.kind)) + "</b> " +
+      '<div class="nade"><div><span class="nadeic">' + ic(NADE_ICON[it.kind] || "bomb") + "</span><b>" + esc(it.name || nadeName(it.kind)) + "</b> " +
       '<span class="meta">' + esc(nadeName(it.kind)) + (it.by ? " · " + esc((playerById(it.by) || {}).name || "") : "") +
       (it.from || it.to ? " · " + esc([it.from, it.to].filter(Boolean).join(" → ")) : "") + "</span></div>" +
       ((it.steps || []).length ? '<ol class="steps">' + it.steps.map((s) => "<li>" + esc(s) + "</li>").join("") + "</ol>" : "") +
@@ -1369,7 +1538,7 @@
   function videosHTML(b) {
     if (!(b.items || []).length) return '<div class="empty">Видео нет.</div>';
     return (b.items || []).map((it) =>
-      '<div class="task">🎥 <a href="' + esc(it.url) + '" target="_blank" rel="noopener">' + esc(it.caption || it.url) + "</a></div>"
+      '<div class="task"><span class="nadeic">' + ic("video") + '</span><a href="' + esc(it.url) + '" target="_blank" rel="noopener">' + esc(it.caption || it.url) + "</a></div>"
     ).join("");
   }
   function notesHTML(b) {
@@ -1595,23 +1764,23 @@
   const BOARD_WIDTHS = [{ w: 1, n: "Тонко" }, { w: 2, n: "Средне" }, { w: 3, n: "Жирно" }];
   const strokePx = (w) => STROKE_PX[w] || STROKE_PX[2];
   const BOARD_TOOLS = [
-    { id: "select", icon: "☝", n: "Выбор", key: "V" },
-    { id: "arrow", icon: "➜", n: "Движение", key: "A" },
-    { id: "line", icon: "╱", n: "Линия", key: "L" },
-    { id: "pen", icon: "✎", n: "Каракули", key: "P" },
-    { id: "zone", icon: "◯", n: "Зона", key: "Z" },
-    { id: "player", icon: "①", n: "Игрок", key: "1" },
-    { id: "number", icon: "№", n: "Номер", key: "N" },
-    { id: "text", icon: "T", n: "Текст", key: "X" },
-    { id: "nade", icon: "💣", n: "Граната", key: "G" },
-    { id: "eraser", icon: "⌫", n: "Ластик", key: "E" },
+    { id: "select", icon: "cursor", n: "Выбор", key: "V" },
+    { id: "arrow", icon: "arrow", n: "Движение", key: "A" },
+    { id: "line", icon: "line", n: "Линия", key: "L" },
+    { id: "pen", icon: "edit", n: "Карандаш", key: "P" },
+    { id: "zone", icon: "zone", n: "Зона", key: "Z" },
+    { id: "player", icon: "user", n: "Игрок", key: "1" },
+    { id: "number", icon: "hash", n: "Номер", key: "N" },
+    { id: "text", icon: "text", n: "Текст", key: "X" },
+    { id: "nade", icon: "bomb", n: "Граната", key: "G" },
+    { id: "eraser", icon: "eraser", n: "Ластик", key: "E" },
   ];
   const NADE_KINDS = [
-    { k: "smoke", i: "💨", n: "Смоук" }, { k: "molly", i: "🔥", n: "Молотов" },
-    { k: "flash", i: "⚡", n: "Флеш" }, { k: "he", i: "💥", n: "Хешка" },
-    { k: "decoy", i: "🎯", n: "Обманка" },
+    { k: "smoke", i: "smoke", n: "Смоук" }, { k: "molly", i: "molly", n: "Молотов" },
+    { k: "flash", i: "flash", n: "Флеш" }, { k: "he", i: "he", n: "Хешка" },
+    { k: "decoy", i: "decoy", n: "Обманка" },
   ];
-  const nadeMeta = (k) => NADE_KINDS.filter((x) => x.k === k)[0] || { k: k, i: "💣", n: "Граната" };
+  const nadeMeta = (k) => NADE_KINDS.filter((x) => x.k === k)[0] || { k: k, i: "bomb", n: "Граната" };
   const safeColor = (c) => (/^#[0-9a-f]{6}$/i.test(String(c || "")) ? c : BOARD_COLORS[0].c);
   const clamp100 = (v) => Math.max(0, Math.min(100, v));
   const r1 = (v) => Math.round(v * 10) / 10;
@@ -1682,7 +1851,7 @@
     h += '<div class="map-canvas">' + boardCanvasHTML(t, b) + "</div>";
     h += '<div class="boardbar">' + boardBarHTML(t, b) + "</div>";
     h += "</div>";
-    if (big) h += '<button class="iconbtn board-close" data-bclose type="button" title="Закрыть (Esc)">✕</button>';
+    if (big) h += '<button class="iconbtn board-close" data-bclose type="button" title="Закрыть (Esc)">' + ic("x") + '</button>';
     return h + "</div>";
   }
   function boardCanvasHTML(t, b) {
@@ -1700,12 +1869,14 @@
     if (!isCap()) {
       return '<div class="board-row"><span class="board-hint">Схема · ' + boardCount(b) + " эл.</span>" +
         '<span class="board-spacer"></span><button class="toolbtn" data-bzoom type="button">' +
-        (S.boardBig === b.id ? "⤡ Свернуть" : "⤢ Открыть") + "</button></div>";
+        ic(S.boardBig === b.id ? "collapse" : "expand") + " " +
+        (S.boardBig === b.id ? "Свернуть" : "Открыть") + "</button></div>";
     }
+    const dirty = !!(S.draft || {})[t.id];
     let h = '<div class="board-row board-tools" role="toolbar">';
     BOARD_TOOLS.forEach((x) => {
       h += '<button class="toolbtn tool' + (S.boardTool === x.id ? " on" : "") + '" data-tool="' + x.id +
-        '" type="button" title="' + esc(x.n) + " (" + x.key + ')"><span class="ti">' + x.icon + "</span>" +
+        '" type="button" title="' + esc(x.n) + " (" + x.key + ')"><span class="ti">' + ic(x.icon) + "</span>" +
         '<span class="tl">' + esc(x.n) + "</span></button>";
     });
     h += "</div>";
@@ -1721,12 +1892,12 @@
       '<button class="toolbtn sm' + (S.boardWidth === x.w ? " on" : "") + '" data-w="' + x.w +
       '" type="button">' + esc(x.n) + "</button>").join("") + "</span>";
     h += '<span class="bgroup">' +
-      '<button class="toolbtn sm' + (S.boardDash ? " on" : "") + '" data-tog="dash" type="button" title="Пунктир — для необязательных/теневых маршрутов">⌇ Пунктир</button>' +
-      '<button class="toolbtn sm' + (S.boardHead === "both" ? " on" : "") + '" data-tog="head" type="button" title="Наконечники с двух сторон — размен/обмен">⇄ Два конца</button>' +
-      '<button class="toolbtn sm' + (S.boardGrid ? " on" : "") + '" data-tog="grid" type="button" title="Сетка 5% + привязка к ней">▦ Сетка</button>' +
+      '<button class="toolbtn sm' + (S.boardDash ? " on" : "") + '" data-tog="dash" type="button" title="Пунктир — для необязательных/теневых маршрутов">' + ic("dash") + " Пунктир</button>" +
+      '<button class="toolbtn sm' + (S.boardHead === "both" ? " on" : "") + '" data-tog="head" type="button" title="Наконечники с двух сторон — размен/обмен">' + ic("bothends") + " Два конца</button>" +
+      '<button class="toolbtn sm' + (S.boardGrid ? " on" : "") + '" data-tog="grid" type="button" title="Сетка 5% + привязка к ней">' + ic("gridlines") + " Сетка</button>" +
       "</span>";
     h += '<span class="bgroup">' +
-      '<button class="toolbtn sm" data-mstyle type="button" title="Как показывать игроков">🏷 ' +
+      '<button class="toolbtn sm" data-mstyle type="button" title="Как показывать игроков">' + ic("tag") + " " +
       (b.markerStyle === "nick" ? "Ники" : b.markerStyle === "both" ? "Ник+№" : "Номера") + "</button>" +
       "</span>";
     h += "</div>";
@@ -1735,30 +1906,31 @@
       h += '<div class="board-row board-sub">';
       NADE_KINDS.forEach((x) => {
         h += '<button class="toolbtn sm' + (S.boardNade === x.k ? " on" : "") + '" data-nade="' + x.k +
-          '" type="button">' + x.i + " " + esc(x.n) + "</button>";
+          '" type="button">' + ic(x.i) + " " + esc(x.n) + "</button>";
       });
       h += "</div>";
     }
     if (S.boardSel) {
       h += '<div class="board-row board-sub">' +
-        '<button class="toolbtn sm" data-beditel type="button">✎ Подпись</button>' +
-        '<button class="toolbtn sm" data-bdupel type="button">⧉ Дубликат</button>' +
-        '<button class="toolbtn sm" data-bline type="button">➜ Стрелка отсюда</button>' +
-        '<button class="toolbtn sm" data-bdel type="button">🗑 Удалить</button>' +
+        '<button class="toolbtn sm" data-beditel type="button">' + ic("edit") + " Подпись</button>" +
+        '<button class="toolbtn sm" data-bdupel type="button">' + ic("copy") + " Дубликат</button>" +
+        '<button class="toolbtn sm" data-bline type="button">' + ic("arrow") + " Стрелка отсюда</button>" +
+        '<button class="toolbtn sm" data-bdel type="button">' + ic("trash") + " Удалить</button>" +
         "</div>";
     }
     if (S.boardWait === b.id) {
       h += '<div class="board-row board-sub warn"><b>Тапните точку</b> — туда пойдут стрелки от всех игроков</div>';
     }
     h += '<div class="board-row board-acts">' +
-      '<button class="toolbtn sm" data-bundo type="button"' + (histLen(b, "u") ? "" : " disabled") + ">↩ Отменить" +
+      '<button class="toolbtn sm" data-bundo type="button"' + (histLen(b, "u") ? "" : " disabled") + ">" + ic("undo") + " Отменить" +
       (histLen(b, "u") ? " (" + histLen(b, "u") + ")" : "") + "</button>" +
-      '<button class="toolbtn sm" data-bredo type="button"' + (histLen(b, "r") ? "" : " disabled") + ">↪ Вернуть</button>" +
+      '<button class="toolbtn sm" data-bredo type="button"' + (histLen(b, "r") ? "" : " disabled") + ">" + ic("redo") + " Вернуть</button>" +
       '<span class="board-spacer"></span>' +
-      '<button class="toolbtn sm" data-bplace type="button" title="Разложить состав по спауну стороны">🚩 Расставить 1–5</button>' +
-      '<button class="toolbtn sm" data-bfan type="button" title="Стрелки от каждого игрока в одну точку">➜ Стрелки к точке</button>' +
-      '<button class="toolbtn sm" data-bclear type="button">🗑 Очистить</button>' +
-      '<button class="toolbtn sm" data-bzoom type="button">' + (S.boardBig === b.id ? "⤡ Свернуть" : "⤢ Во весь экран") + "</button>" +
+      '<button class="toolbtn sm" data-bplace type="button" title="Разложить состав по спауну стороны">' + ic("flag") + " Расставить 1–5</button>" +
+      '<button class="toolbtn sm" data-bfan type="button" title="Стрелки от каждого игрока в одну точку">' + ic("fan") + " Стрелки к точке</button>" +
+      '<button class="toolbtn sm" data-bclear type="button">' + ic("trash") + " Очистить</button>" +
+      '<button class="toolbtn sm" data-bzoom type="button">' + ic(S.boardBig === b.id ? "collapse" : "expand") + " " + (S.boardBig === b.id ? "Свернуть" : "Во весь экран") + "</button>" +
+      '<button class="toolbtn sm savebtn' + (dirty ? " dirty" : "") + '" data-bsave type="button" title="Отправить правки схемы в команду">' + ic("save") + " Сохранить</button>" +
       "</div>";
     return h;
   }
@@ -1881,7 +2053,8 @@
       return '<g class="draw-item draw-marker' + sel + '" data-marker="' + mk.id + '" transform="translate(' + mk.x + "," + mk.y + ')">' +
         '<circle class="chip-hit" r="4.6"/>' +
         '<circle class="tactic-number-bg" r="3.1" stroke="' + c + '"/>' +
-        '<text class="tactic-number-text" y=".15" fill="' + c + '" style="font-size:3.4px">' + meta.i + "</text>" +
+        nadeGlyph(mk.kind, c) +
+        (mk.label ? '<text class="nade-idx" y="5.6" fill="' + c + '">' + esc(mk.label) + "</text>" : "") +
         '<circle class="selection-ring" r="4.1"/>' + "</g>";
     }
     const label = String(mk.label || "?").slice(0, 18);
@@ -1944,21 +2117,36 @@
     S.boardSel = null;
     boardCommit(t, b);
   }
-  const boardSaveTimers = {};
-  /** Перерисовать доску на месте и отправить правки в базу (с сохранением 260 мс). */
+  /* ---------- черновики схемы ----------
+     Рисование не дёргает базу на каждый жест: правки живут в кэше,
+     страница не пересобирается, а сохранение — явное (кнопка «Сохранить»)
+     или автоматическое при уходе с экрана. Так доска не лагает. */
+  function draftIds() { return Object.keys(S.draft || {}); }
+  function markDraft(t) {
+    S.draft = S.draft || {};
+    if (!S.draft[t.id]) S.draft[t.id] = true;
+    saveState("draft");
+  }
+  /** Перерисовать доску на месте и пометить тактику как несохранённую. */
   function boardCommit(t, b) {
+    markDraft(t);
     repaintBoard(t, b);
+  }
+  /** Отправить все черновики схем в базу одним заходом. */
+  function flushDrafts() {
+    const ids = draftIds();
+    if (!ids.length) return Promise.resolve();
+    S.draft = {};
     saveState("saving");
-    clearTimeout(boardSaveTimers[b.id]);
-    boardSaveTimers[b.id] = setTimeout(() => {
+    return Promise.all(ids.map((id) => {
+      const t = tacticById(id);
+      if (!t) return Promise.resolve();
       const blocks = clone(t.blocks || []);
-      const i = blocks.findIndex((x) => x.id === b.id);
-      if (i >= 0) blocks[i] = clone(b);
-      DB.save("tactics", { id: t.id, blocks }).then(() => saveState("saved")).catch((e) => {
-        saveState("");
+      return DB.save("tactics", { id: t.id, blocks }).catch((e) => {
+        markDraft(t); // не удалось отправить — черновик остаётся
         toast((e && e.message) || "Не сохранилось", "warn");
       });
-    }, 260);
+    })).then(() => { if (!draftIds().length) saveState("saved"); });
   }
   /* --- операции --- */
   function usedPlayerIds(b) {
@@ -2125,6 +2313,15 @@
   }
 
   /* --- wiring --- */
+  /** После тихого обновления кэша (правка схемы ещё на экране) переводим
+      обработчики уже отрисованных досок на свежие объекты кэша. */
+  function rebindBoards() {
+    const p = parseHash();
+    if (p[0] !== "tactic") return;
+    const t = tacticById(p[1]);
+    if (!t) return;
+    wireBoards($("#view"), t);
+  }
   function wireBoards(view, t) {
     $$("[data-board]", view).forEach((wrap) => {
       const b = blockById(t, wrap.dataset.board);
@@ -2198,13 +2395,21 @@
       btn.onclick = () => { S.boardNade = btn.dataset.nade; repaintBoard(t, b); };
     });
     const ms = $("[data-mstyle]", wrap);
-    if (ms) ms.onclick = async () => {
+    if (ms) ms.onclick = () => {
       const order = ["number", "nick", "both"];
       const i = order.indexOf(b.markerStyle || "number");
       b.markerStyle = order[(i + 1) % order.length];
-      await boardSaveNow(t, b);
-      repaintBoard(t, b);
+      boardCommit(t, b);
     };
+    $$("[data-bsave]", wrap).forEach((el) => {
+      el.onclick = async () => {
+        try {
+          // Сохранение шлёт событие данных → кэш обновится и страница пересвяжется сам.
+          await boardSaveNow(t, b);
+          toast("Схема сохранена", "ok");
+        } catch (e) { /* тост уже показан в boardSaveNow */ }
+      };
+    });
     $$("[data-bundo]", wrap).forEach((el) => { el.onclick = () => boardUndo(t, b); });
     $$("[data-bredo]", wrap).forEach((el) => { el.onclick = () => boardRedo(t, b); });
     $$("[data-bdel]", wrap).forEach((el) => { el.onclick = () => boardDeleteSel(t, b); });
@@ -2228,8 +2433,11 @@
     const i = blocks.findIndex((x) => x.id === b.id);
     if (i >= 0) blocks[i] = clone(b);
     saveState("saving");
-    return DB.save("tactics", { id: t.id, blocks }).then(() => saveState("saved")).catch((e) => {
-      saveState("");
+    return DB.save("tactics", { id: t.id, blocks }).then(() => {
+      if (S.draft) delete S.draft[t.id];
+      if (!draftIds().length) saveState("saved");
+    }).catch((e) => {
+      markDraft(t);
       toast((e && e.message) || "Не сохранилось", "warn");
       throw e;
     });
@@ -2300,7 +2508,7 @@
         b.markers.push(mk);
         S.boardSel = { id: mk.id };
         boardCommit(t, b);
-        toast("① " + p.name + " → " + playerByIdOrder(p));
+        toast(p.name + " — номер " + playerByIdOrder(p));
         return;
       }
       if (S.boardTool === "number" || S.boardTool === "nade") {
@@ -2647,6 +2855,60 @@
   /* ---------- /board block ---------- */
 
   /* ---------- players ---------- */
+  /* ---------- чат команды ---------- */
+  let chatNoticeMode = false;
+  function viewChat() {
+    const view = $("#view");
+    const me = DB.actorName();
+    const msgs = (DB.cache.messages || []).slice().sort((a, b) => (a.ts || 0) - (b.ts || 0));
+    const notice = msgs.slice().reverse().find((x) => x.kind === "notice");
+    let html = '<div class="' + rcls("pagehead") + '"><div><h1>Чат команды</h1>' +
+      '<p class="sub">Сообщения видят только участники команды' + (DB.mode() === "cloud" ? " · синхронизация в реальном времени" : " · локальный режим") + "</p></div></div>";
+    if (notice) {
+      html += '<div class="' + rcls("noticebanner") + '">' + ic("mega") + "<div><b>Объявление · " + esc(notice.author || "Капитан") + "</b>" +
+        esc(notice.text) + "<small>" + fmtTime(notice.ts) + "</small></div></div>";
+    }
+    html += '<div class="chatlist" id="chatList">';
+    if (!msgs.length) {
+      html += '<div class="' + rcls("sec") + '"><div class="sec-pad"><div class="empty">Сообщений пока нет. Напишите первое — команда увидит его сразу.</div></div></div>';
+    }
+    msgs.forEach((m) => {
+      const mine = m.author === me;
+      const canDel = isCap() || mine;
+      html += '<div class="' + rcls("msg" + (mine ? " me" : "") + (m.kind === "notice" ? " notice" : "")) + '">' +
+        '<div class="mhead"><b>' + esc(m.author || "—") + "</b><time>" + fmtTime(m.ts) + "</time>" +
+        (canDel ? '<button class="mdel" data-mdel="' + esc(m.id) + '" type="button" title="Удалить">' + ic("trash") + "</button>" : "") +
+        "</div>" + '<div class="mtext">' + esc(m.text) + "</div></div>";
+    });
+    html += "</div>";
+    html += '<form class="chatbar" id="chatForm">' +
+      (isCap() ? '<button class="toolbtn sm' + (chatNoticeMode ? " on" : "") + '" data-notice type="button" title="Объявление от капитана">' + ic("mega") + "</button>" : "") +
+      '<input id="chatText" maxlength="500" placeholder="' + (chatNoticeMode ? "Текст объявления…" : "Сообщение команде…") + '" autocomplete="off">' +
+      '<button class="btn" data-send type="submit">' + ic("send") + "<span>Отправить</span></button></form>";
+    view.innerHTML = html;
+    const list = $("#chatList", view);
+    if (list) list.scrollTop = list.scrollHeight;
+    const nf = $("[data-notice]", view);
+    if (nf) nf.onclick = () => { chatNoticeMode = !chatNoticeMode; viewChat(); const inp = $("#chatText"); if (inp) inp.focus(); };
+    $("#chatForm", view).onsubmit = (e) => {
+      e.preventDefault();
+      const inp = $("#chatText", view);
+      const text = String(inp.value || "").trim();
+      if (!text) return;
+      inp.value = "";
+      DB.save("messages", {
+        id: uid("ms"), author: me, authorName: me,
+        kind: chatNoticeMode && isCap() ? "notice" : "msg",
+        text, ts: Date.now(),
+      }).catch((er) => toast((er && er.message) || "Не отправилось", "warn"));
+      if (chatNoticeMode) { chatNoticeMode = false; }
+    };
+    $$("[data-mdel]", view).forEach((b) => {
+      b.onclick = () => DB.del("messages", b.dataset.mdel).catch((er) => toast((er && er.message) || "Не удалилось", "warn"));
+    });
+    window.scrollTo(0, document.body.scrollHeight);
+  }
+
   function viewPlayers() {
     const view = $("#view");
     let html = '<div class="pagehead"><div><h1>Игроки</h1><p class="sub">' + DB.cache.players.length + " чел.</p></div>" +
@@ -2658,7 +2920,7 @@
       html += '<tr data-prow="' + p.id + '"><td><span style="display:inline-flex;align-items:center;gap:8px"><span class="pnum" style="--pc:' +
         esc(p.color || "#e8a72f") + '">' + (i + 1) + "</span><b>" + esc(p.name) + "</b>" +
         (p.id === DB.myPlayerId() ? ' <span class="badge acc">вы</span>' : "") + "</span></td><td>" + esc(p.role || "—") + "</td><td class=\"muted\">" +
-        esc((p.positions || []).join(" · ") || "—") + "</td>" + (isCap() ? '<td><button class="menubtn" data-pmenu="' + p.id + '" type="button">⋮</button></td>' : "") + "</tr>";
+        esc((p.positions || []).join(" · ") || "—") + "</td>" + (isCap() ? '<td><button class="menubtn" data-pmenu="' + p.id + '" type="button" title="Действия">' + ic("dots") + '</button></td>' : "") + "</tr>";
     });
     html += "</tbody></table></div></div>";
     view.innerHTML = html;
@@ -2720,11 +2982,11 @@
     if (!p) { go("#/players"); return; }
     const inv = involvement(p.id);
     const isMe = p.id === DB.myPlayerId();
-    let html = '<a class="backlink" href="#/players">← Игроки</a><div class="pagehead"><div><h1>' + esc(p.name) +
+    let html = '<a class="backlink" href="#/players">' + ic("back") + ' Игроки</a><div class="' + rcls("pagehead") + '"><div><h1>' + esc(p.name) +
       (isMe ? ' <span class="badge acc">это вы</span>' : "") + "</h1>" +
       '<p class="sub">' + esc([p.role || null, (p.positions || []).join(" / ") || null].filter(Boolean).join(" · ") || "Игрок") + "</p></div>" +
-      '<div class="actions"><button class="starbtn' + (DB.isFav("player", p.id) ? " on" : "") + '" data-fav type="button" style="font-size:20px">★</button>' +
-      (isCap() ? '<button class="menubtn" data-pm type="button">⋮</button>' : "") + "</div></div>";
+      '<div class="actions"><button class="starbtn' + (DB.isFav("player", p.id) ? " on" : "") + '" data-fav type="button" title="В избранное">' + ic("star") + '</button>' +
+      (isCap() ? '<button class="menubtn" data-pm type="button" title="Действия">' + ic("dots") + '</button>' : "") + "</div></div>";
     html += '<div class="sec"><div class="sec-pad"><dl class="kv" style="padding:0">' +
       "<dt>Роль</dt><dd>" + esc(p.role || "—") + "</dd>" +
       "<dt>Позиции</dt><dd>" + esc((p.positions || []).join(" · ") || "—") + "</dd></dl>" +
@@ -2736,7 +2998,7 @@
     inv.tasks.forEach((r) => {
       const m = mapById(r.tactic.map_id);
       html += '<a class="row" href="#/tactic/' + r.tactic.id + '"><span class="row-main"><b>' + esc(r.item.task || r.item.role || "Задача") + "</b><small>" +
-        esc(r.tactic.name + (m ? " · " + m.name : "")) + "</small></span><span class=\"row-arrow\">›</span></a>";
+        esc(r.tactic.name + (m ? " · " + m.name : "")) + "</small></span><span class=\"row-arrow\">" + ic("chevron") + "</span></a>";
     });
     html += "</div></div>";
     // Гранаты
@@ -2744,7 +3006,7 @@
     if (!inv.nades.length) html += '<div class="empty">Гранаты не назначены.</div>';
     inv.nades.forEach((r) => {
       html += '<a class="row" href="#/tactic/' + r.tactic.id + '"><span class="row-main"><b>' + (NADE_ICON[r.item.kind] || "") + " " + esc(r.item.name || nadeName(r.item.kind)) +
-        "</b><small>" + esc(r.tactic.name) + "</small></span><span class=\"row-arrow\">›</span></a>";
+        "</b><small>" + esc(r.tactic.name) + "</small></span><span class=\"row-arrow\">" + ic("chevron") + "</span></a>";
     });
     html += "</div></div>";
     if (!isMe && (DB.team.settings.allowSwitchPlayer !== false || isCap())) {
@@ -2797,14 +3059,14 @@
     if (!inv.tasks.length) html += '<div class="empty">Пока нет.</div>';
     inv.tasks.slice(0, 20).forEach((r) => {
       html += '<a class="row" href="#/tactic/' + r.tactic.id + '"><span class="row-main"><b>' + esc(r.item.task || r.item.role || "Задача") + "</b><small>" +
-        esc(r.tactic.name) + (r.item.note ? " · " + r.item.note : "") + "</small></span><span class=\"row-arrow\">›</span></a>";
+        esc(r.tactic.name) + (r.item.note ? " · " + r.item.note : "") + "</small></span><span class=\"row-arrow\">" + ic("chevron") + "</span></a>";
     });
     html += "</div></div>";
     html += '<div class="sec"><div class="sec-head"><h2>Мои гранаты · ' + inv.nades.length + "</h2></div><div class=\"sec-body\">";
     if (!inv.nades.length) html += '<div class="empty">Пока нет.</div>';
     inv.nades.slice(0, 20).forEach((r) => {
       html += '<a class="row" href="#/tactic/' + r.tactic.id + '"><span class="row-main"><b>' + (NADE_ICON[r.item.kind] || "") + " " + esc(r.item.name || nadeName(r.item.kind)) +
-        "</b><small>" + esc(r.tactic.name + (((r.item.steps || []).length) ? " · " + r.item.steps.length + " шаг." : "")) + "</small></span><span class=\"row-arrow\">›</span></a>";
+        "</b><small>" + esc(r.tactic.name + (((r.item.steps || []).length) ? " · " + r.item.steps.length + " шаг." : "")) + "</small></span><span class=\"row-arrow\">" + ic("chevron") + "</span></a>";
     });
     html += "</div></div>";
     if (DB.team.settings.allowSwitchPlayer !== false || isCap()) {
@@ -2816,7 +3078,7 @@
   }
 
   /* ---------- materials ---------- */
-  const MAT_ICON = { image: "🖼", video: "🎥", gif: "🎞", link: "🔗", note: "📝", pdf: "📄", demo: "💾" };
+  const MAT_ICON = { image: "image", video: "video", gif: "film", link: "link", note: "note", pdf: "file", demo: "save" };
   function viewMaterials() {
     const view = $("#view");
     const f = S.mfilter;
@@ -2826,7 +3088,7 @@
     if (types.length > 1) {
       html += '<div class="chiprow"><button class="chip' + (!f.type ? " on" : "") + '" data-f="type:" type="button">Все</button>';
       types.forEach((tp) => {
-        html += '<button class="chip' + (f.type === tp ? " on" : "") + '" data-f="type:' + tp + '" type="button">' + (MAT_ICON[tp] || "") + " " + esc(matTypeName(tp)) + "</button>";
+        html += '<button class="chip' + (f.type === tp ? " on" : "") + '" data-f="type:' + tp + '" type="button">' + ic(MAT_ICON[tp] || "file") + " " + esc(matTypeName(tp)) + "</button>";
       });
       html += "</div>";
     }
@@ -2861,10 +3123,10 @@
   function materialRowHTML(m, inMap) {
     const map = mapById(m.map_id);
     return '<div class="row" style="cursor:default"><button class="row-main" data-mopen="' + m.id + '" style="display:flex;gap:10px;align-items:center;background:none;border:0;padding:0;text-align:left;flex:1;min-width:0;cursor:pointer">' +
-      '<span class="matic">' + (MAT_ICON[m.type] || "📎") + '</span><span style="min-width:0"><b style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(m.title) +
+      '<span class="matic">' + ic(MAT_ICON[m.type] || "link") + '</span><span style="min-width:0"><b style="display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(m.title) +
       "</b>" + (map || m.description ? "<small class=\"muted\" style=\"display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap\">" + esc([map ? map.name : null, m.description || null].filter(Boolean).join(" · ")) + "</small>" : "") + "</span></button>" +
-      '<span class="row-side"><button class="starbtn' + (DB.isFav("material", m.id) ? " on" : "") + '" data-mfav="' + m.id + '" type="button">★</button>' +
-      (isCap() ? '<button class="menubtn" data-mmenu="' + m.id + '" type="button">⋮</button>' : "") + "</span></div>";
+      '<span class="row-side"><button class="starbtn' + (DB.isFav("material", m.id) ? " on" : "") + '" data-mfav="' + m.id + '" type="button" title="В избранное">' + ic("star") + "</button>" +
+      (isCap() ? '<button class="menubtn" data-mmenu="' + m.id + '" type="button" title="Действия">' + ic("dots") + "</button>" : "") + "</span></div>";
   }
   function bindMaterialRows(view) {
     $$("[data-mopen]", view).forEach((b) => {
@@ -2983,10 +3245,10 @@
 
     // Шаблоны
     html += '<div class="sec"><div class="sec-head"><h2>Шаблоны тактик · ' + DB.cache.templates.length + "</h2></div><div class=\"sec-body\">";
-    if (!DB.cache.templates.length) html += '<div class="empty">Шаблонов нет. Сохраните тактику как шаблон из её меню ⋮.</div>';
+    if (!DB.cache.templates.length) html += '<div class="empty">Шаблонов нет. Сохраните тактику как шаблон из её меню.</div>';
     DB.cache.templates.forEach((tp) => {
       html += '<div class="row" style="cursor:default"><span class="row-main"><b>' + esc(tp.name) + "</b><small>" + (tp.blocks || []).length + " бл.</small></span>" +
-        '<span class="row-side"><button class="menubtn" data-tplmenu="' + tp.id + '" type="button">⋮</button></span></div>';
+        '<span class="row-side"><button class="menubtn" data-tplmenu="' + tp.id + '" type="button" title="Действия">' + ic("dots") + '</button></span></div>';
     });
     html += "</div></div>";
 
@@ -3013,9 +3275,15 @@
       '<button class="btn ghost tiny" data-import type="button">Загрузить из файла</button></div>' +
       '<input type="file" accept="application/json,.json" hidden data-impfile></div></div>';
 
+    // Сброс содержимого: капитан начинает с чистого листа
+    html += '<div class="sec"><div class="sec-head"><h2>Сброс содержимого</h2></div><div class="sec-pad">' +
+      '<p class="muted tiny">Удаляет выбранные данные команды у всех участников. Карты с фото и названиями остаются — ' +
+      "схемы рисуются заново с нуля. Действие необратимо: сначала сделайте экспорт.</p>" +
+      '<div class="btnrow"><button class="btn danger tiny" data-purge type="button">' + ic("trash") + " Удалить данные команды</button></div></div></div>";
+
     // Опасная зона
     html += '<div class="sec"><div class="sec-head"><h2>Опасная зона</h2></div><div class="sec-pad"><div class="btnrow" style="margin-top:0">' +
-      '<button class="btn ghost tiny" data-logout type="button">Выйти из команды</button>' +
+      '<button class="btn ghost tiny" data-logout type="button">' + ic("logout") + " Выйти из команды</button>" +
       '<button class="btn danger tiny" data-delteam type="button">Удалить команду</button></div></div></div>';
 
     view.innerHTML = html;
@@ -3064,6 +3332,7 @@
       const f = e.target.files && e.target.files[0];
       if (f) importTeam(f);
     };
+    $("[data-purge]", view).onclick = sheetPurge;
     $("[data-logout]", view).onclick = doLogout;
     $("[data-delteam]", view).onclick = () => confirmDlg('Удалить команду «' + DB.team.name + "» со всеми данными?", async () => {
       saveState("saving");
@@ -3074,6 +3343,42 @@
         toast("Команда удалена");
       } catch (e) { saveState(""); toast((e && e.message) || "Не удалилось", "warn"); }
     });
+  }
+
+  /** Капитанский сброс: убираем содержимое, карты с фото остаются для рисования с нуля. */
+  function sheetPurge() {
+    if (!isCap()) return;
+    const opts = [
+      { t: "tactics", n: "Тактики и схемы", on: true },
+      { t: "materials", n: "Материалы", on: true },
+      { t: "templates", n: "Шаблоны тактик", on: true },
+      { t: "messages", n: "Чат команды", on: true },
+      { t: "activity", n: "Журнал изменений", on: true },
+      { t: "players", n: "Состав игроков", on: false },
+    ];
+    openSheet("Сброс содержимого команды",
+      '<p class="muted tiny" style="margin-top:0">Карты остаются: фото, названия и радары не удаляются — схемы рисуются заново.</p>' +
+      opts.map((o) => '<label class="checkrow"><input type="checkbox" data-pt="' + o.t + '"' + (o.on ? " checked" : "") + ">" +
+        "<span>" + o.n + " · " + (DB.cache[o.t] || []).length + " шт.</span></label>").join("") +
+      '<div class="form-error" id="pgErr"></div>',
+      '<button class="btn ghost" data-x type="button">Отмена</button><button class="btn danger" data-ok type="button">Удалить</button>');
+    $("[data-x]").onclick = closeSheet;
+    $("[data-ok]").onclick = () => {
+      const tables = $$("[data-pt]").filter((c) => c.checked).map((c) => c.dataset.pt);
+      if (!tables.length) { $("#pgErr").textContent = "Выберите, что удалить"; return; }
+      const total = tables.reduce((n, t) => n + (DB.cache[t] || []).length, 0);
+      confirmDlg("Удалить " + total + " записей у всех участников?", async () => {
+        saveState("saving");
+        try {
+          await DB.purge(tables);
+          if (tables.indexOf("activity") < 0) await DB.log("очистил содержимое команды", null);
+          saveState("saved");
+          closeSheet();
+          render();
+          toast("Готово: карты на месте, содержимое очищено", "ok");
+        } catch (e) { saveState(""); toast((e && e.message) || "Не удалилось", "warn"); }
+      });
+    };
   }
 
   function templateMenu(anchor, id) {
@@ -3198,12 +3503,12 @@
     if (!box) return; // шторку закрыли, пока шла проверка
     const bad = rows.filter((r) => !r.ok).length;
     box.innerHTML = rows.map((r) =>
-      '<div class="row" style="cursor:default"><span class="row-main"><b>' + (r.ok ? "✓ " : "✕ ") + esc(r.name) + "</b>" +
+      '<div class="row" style="cursor:default"><span class="row-main"><b><span class="diagic ' + (r.ok ? "ok" : "bad") + '">' + ic(r.ok ? "check" : "x") + "</span>" + esc(r.name) + "</b>" +
       (r.detail ? "<small>" + esc(r.detail) + "</small>" : "") + "</span></div>" +
       (!r.ok && r.fix ? '<p class="muted tiny" style="margin:2px 0 10px">' + esc(r.fix) + "</p>" : "")
     ).join("") +
       '<p class="muted tiny" style="margin:12px 0">' + (bad
-        ? "Не всё гладко: пункты с ✕ нужно исправить — под каждым написано что делать."
+        ? "Не всё гладко: пункты с отметкой «не пройдено» нужно исправить — под каждым написано что делать."
         : "Всё подключено: правки капитана прилетают игрокам сами, без перезагрузки.") + "</p>";
   }
 
@@ -3273,6 +3578,7 @@
         // а своя правка схемы уже отрисована локально (repaintBoard).
         if (S.boardBusy && (evt.table === "tactics" || evt.table === "*")) {
           if (evt.origin === "remote") S.dirtyRemote = true;
+          rebindBoards(); // кэш обновился — переводим обработчики доски на свежие объекты
           return;
         }
         if (sheetOpen() || modalOpen() || menuOpen()) {
@@ -3296,6 +3602,11 @@
     bindAuthSceneFx();
     $("#searchBtn").onclick = () => { if (DB.team) openSearch(); };
     window.addEventListener("hashchange", route);
+    // Закрываем вкладку с несохранённой схемой — предупреждаем и пытаемся успеть сохранить.
+    window.addEventListener("pagehide", () => { flushDrafts(); });
+    window.addEventListener("beforeunload", (e) => {
+      if (draftIds().length) { e.preventDefault(); e.returnValue = ""; }
+    });
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape") {
         if (S.boardBig) { S.boardBig = null; S.boardWait = null; S.boardFrom = null; render(); return; }
@@ -3304,6 +3615,7 @@
       }
     });
     DB.on(onDbEvent);
+    DB.draftGuard = () => draftIds().length > 0;
     DB.init().then(() => {
       S.bootDone = true;
       route();

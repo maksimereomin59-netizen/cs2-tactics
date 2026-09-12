@@ -8,7 +8,7 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="assets/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="assets/icon.svg">
-  <link rel="stylesheet" href="styles.css?v=9">
+  <link rel="stylesheet" href="styles.css?v=10">
 </head>
 <body>
   <!-- Живой фон экрана входа: фото команды + анимированная разметка тактики. -->
@@ -35,16 +35,18 @@
     <div class="authscene-scrim"></div>
   </div>
 
+  <!-- Размытый фон команды на всех рабочих страницах (фото из «Фото на входе»). -->
+  <div class="appbg" id="appBg" aria-hidden="true"></div>
+
   <header class="top" id="topbar" hidden>
-    <div class="brand">
-      <span class="brand-mark">CS2</span>
+    <a class="brand" href="#/overview">
+      <span class="brand-logo" aria-hidden="true"><img src="assets/icon.svg" alt=""></span>
       <span class="brand-team" id="brandTeam">—</span>
-      <span class="brand-sub">PLAYBOOK</span>
-    </div>
+    </a>
     <div class="top-status">
-      <span class="netdot" id="netDot" title="Соединение"></span>
       <span class="savestate" id="saveState" hidden></span>
-      <button class="iconbtn" id="searchBtn" type="button" title="Поиск">⌕</button>
+      <span class="netdot" id="netDot" title="Соединение"></span>
+      <button class="iconbtn" id="searchBtn" type="button" title="Поиск"></button>
       <span class="rolebadge" id="roleBadge">Игрок</span>
     </div>
   </header>
@@ -67,9 +69,9 @@
   <div class="toast-root" id="toastRoot"></div>
 
   <script src="supabase-config.js"></script>
-  <script src="data.js?v=9"></script>
-  <script src="db.js?v=9"></script>
-  <script src="seed.js?v=9"></script>
-  <script src="app.js?v=9"></script>
+  <script src="data.js?v=10"></script>
+  <script src="db.js?v=10"></script>
+  <script src="seed.js?v=10"></script>
+  <script src="app.js?v=10"></script>
 </body>
 </html>

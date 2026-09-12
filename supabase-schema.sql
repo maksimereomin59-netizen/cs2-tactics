@@ -102,6 +102,19 @@ create table if not exists activity (
 );
 create index if not exists activity_team_idx on activity (team_id, ts desc);
 
+-- ---------------- messages (внутрибраузерный чат команды) ----------------
+-- ts — epoch-миллисекунды (bigint): порядок сообщений одинаков и в облаке, и локально.
+create table if not exists messages (
+  id text primary key,
+  team_id uuid not null references teams(id) on delete cascade,
+  author text not null default '',
+  author_id uuid default auth.uid(),
+  kind text not null default 'msg' check (kind in ('msg', 'notice')),
+  text text not null default '',
+  ts bigint not null default (extract(epoch from clock_timestamp()) * 1000)::bigint
+);
+create index if not exists messages_team_idx on messages (team_id, ts);
+
 -- ---------------- helpers ----------------
 create or replace function public.is_member(p_team uuid)
 returns boolean language sql stable security definer set search_path = public as
@@ -177,6 +190,7 @@ alter table tactics enable row level security;
 alter table materials enable row level security;
 alter table templates enable row level security;
 alter table activity enable row level security;
+alter table messages enable row level security;
 
 do $$ begin
   -- memberships: read own rows only; writes go through RPCs.
@@ -215,6 +229,17 @@ begin
   end if;
   if not exists (select 1 from pg_policies where policyname = 'activity_ins_captain') then
     create policy activity_ins_captain on activity for insert with check (is_captain(team_id));
+  end if;
+  -- Чат: пишут все члены команды, удаляет автор или капитан.
+  if not exists (select 1 from pg_policies where policyname = 'messages_sel_member') then
+    create policy messages_sel_member on messages for select using (is_member(team_id));
+  end if;
+  if not exists (select 1 from pg_policies where policyname = 'messages_ins_member') then
+    create policy messages_ins_member on messages for insert with check (is_member(team_id));
+  end if;
+  if not exists (select 1 from pg_policies where policyname = 'messages_del_own') then
+    create policy messages_del_own on messages for delete
+      using (is_member(team_id) and (is_captain(team_id) or author_id = auth.uid()));
   end if;
 end $$;
 
@@ -283,7 +308,7 @@ end $$;
 do $$
 declare t text;
 begin
-  foreach t in array array['players', 'maps', 'tactics', 'materials', 'templates', 'activity'] loop
+  foreach t in array array['players', 'maps', 'tactics', 'materials', 'templates', 'activity', 'messages'] loop
     begin
       execute format('alter publication supabase_realtime add table %I', t);
     exception when duplicate_object then
