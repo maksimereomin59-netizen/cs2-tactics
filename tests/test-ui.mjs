@@ -23,8 +23,15 @@ const errors = [];
 window.addEventListener("error", (e) => errors.push(String(e.error || e.message)));
 window.onunhandledrejection = (e) => errors.push("unhandled: " + e.reason);
 
-// Подключаем скрипты в том же порядке, что и в index.html.
-for (const f of ["supabase-config.js", "data.js", "db.js", "seed.js", "app.js"]) {
+/* Подключаем скрипты в том же порядке, что и в index.html.
+   Конфигурацию берём из supabase-config.example.js, а не из рабочего
+   supabase-config.js: в рабочем лежат настоящие ключи проекта, db.js с ними
+   включает облачный режим (cloudConfig() принимает url без «xxxx»), тест уходит
+   в сетевые вызовы и раздел «Управление» не дорисовывается. Проверки ниже
+   рассчитаны на локальный режим («Облако не подключено», «Ключи проекта не
+   найдены»), поэтому конфигурацию фиксируем заглушками — результат не должен
+   зависеть от того, какие ключи сейчас закоммичены. */
+for (const f of ["supabase-config.example.js", "data.js", "db.js", "seed.js", "app.js"]) {
   try {
     window.eval(readFileSync(`${ROOT}/${f}`, "utf8"));
   } catch (e) {

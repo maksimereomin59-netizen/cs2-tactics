@@ -4,3 +4,4 @@
 
 # Зависимости проверок (tests/) в репозиторий не кладём
 node_modules/
+tests/package-lock.json
