@@ -283,7 +283,7 @@ body.captain .tactical-map.editing { touch-action: none; cursor: crosshair; }
 .tactic-label { font: 800 3.2px/1 -apple-system, sans-serif; text-anchor: middle; dominant-baseline: central; }
 .draw-marker { cursor: grab; }
 .preview-line { fill: none; stroke-width: 3; stroke-linecap: round; stroke-dasharray: 3 2; pointer-events: none; vector-effect: non-scaling-stroke; }
-.pmk circle { fill: rgba(6,8,11,.95); stroke-width: 1; vector-effect: non-scaling-stroke; }
+.pmk .pmk-dot { fill: rgba(6,8,11,.95); stroke-width: 1; vector-effect: non-scaling-stroke; }
 .pmk .player-num { font: 900 3.8px/1 ui-monospace, monospace; text-anchor: middle; dominant-baseline: central; }
 .pmk .player-tag { fill: rgba(6,8,11,.95); stroke-width: .85; vector-effect: non-scaling-stroke; }
 .pmk .player-nick { font: 800 3px/1 -apple-system, sans-serif; text-anchor: middle; dominant-baseline: central; }
@@ -381,4 +381,236 @@ body.captain .pmk { cursor: grab; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
+}
+
+/* ============================================================
+   v9 — экран входа с живым фото + редактор схемы
+   ============================================================ */
+
+/* ---------- фон входа: фото, свет, зерно, разметка тактики ---------- */
+.authscene { position: fixed; inset: 0; z-index: 0; overflow: hidden; background: #04060a; display: none; }
+body.auth-mode .authscene { display: block; }
+body.auth-mode .layout { position: relative; z-index: 1; }
+body.auth-mode { background: transparent; padding-bottom: 0; }
+body.auth-mode .view { max-width: none; margin: 0; padding: 0; }
+
+.authscene-par {
+  position: absolute; inset: -3.5%;
+  transform: translate3d(0, 0, 0) rotate(var(--tilt, 0deg));
+  transition: transform .4s cubic-bezier(.22, .61, .36, 1);
+  will-change: transform;
+}
+.authscene-pre, .authscene-img {
+  position: absolute; inset: 0;
+  background-position: center; background-size: cover; background-repeat: no-repeat;
+}
+.authscene-pre { filter: blur(26px); transform: scale(1.08); opacity: .85; }
+.authscene-img {
+  filter: blur(var(--auth-blur, 3px)) saturate(1.05) contrast(1.05) brightness(.95);
+  animation: auth-breathe 26s ease-in-out infinite alternate;
+}
+@keyframes auth-breathe {
+  from { transform: scale(1.025) translate3d(.4%, .3%, 0); }
+  to   { transform: scale(1.1) translate3d(-1.4%, -1.1%, 0); }
+}
+.authscene-light {
+  position: absolute; inset: -12%;
+  background:
+    radial-gradient(42% 28% at 28% 18%, rgba(255, 214, 140, .28), transparent 62%),
+    radial-gradient(38% 26% at 74% 70%, rgba(120, 190, 255, .2), transparent 64%);
+  mix-blend-mode: screen;
+  animation: auth-sweep 17s ease-in-out infinite alternate;
+  pointer-events: none;
+}
+@keyframes auth-sweep {
+  from { transform: translate3d(-3%, -2%, 0); opacity: .62; }
+  50%  { opacity: 1; }
+  to   { transform: translate3d(4%, 3%, 0); opacity: .7; }
+}
+.authscene-grain {
+  position: absolute; inset: 0; opacity: .055; mix-blend-mode: overlay; pointer-events: none;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='3'/></filter><rect width='120' height='120' filter='url(%23n)'/></svg>");
+  animation: auth-grain 1.4s steps(4) infinite;
+}
+@keyframes auth-grain {
+  0% { transform: translate3d(0, 0, 0); }
+  25% { transform: translate3d(-2%, 1%, 0); }
+  50% { transform: translate3d(1%, -2%, 0); }
+  75% { transform: translate3d(-1%, -1%, 0); }
+  100% { transform: translate3d(2%, 1%, 0); }
+}
+.authscene-scrim {
+  position: absolute; inset: 0; pointer-events: none;
+  background:
+    radial-gradient(130% 82% at 50% 42%, rgba(5, 7, 11, calc(var(--auth-dim, .46) * .5)) 0%, rgba(4, 6, 10, calc(var(--auth-dim, .46) * 1.15)) 78%, rgba(2, 3, 5, calc(var(--auth-dim, .46) * 1.4)) 100%),
+    linear-gradient(180deg, rgba(3, 5, 8, .78) 0%, rgba(3, 5, 8, .18) 30%, rgba(3, 5, 8, .62) 74%, rgba(2, 3, 5, .92) 100%);
+}
+.authscene-tactic { position: absolute; inset: 5% 3%; width: 94%; height: 90%; opacity: .55; pointer-events: none; }
+.atc-line path {
+  fill: none; stroke: rgba(232, 167, 47, .9); stroke-width: 1.6; stroke-linecap: round;
+  vector-effect: non-scaling-stroke; stroke-dasharray: 240; stroke-dashoffset: 240;
+  animation: atc-draw 9s cubic-bezier(.3, .7, .2, 1) infinite;
+}
+.atc-line.l2 path { stroke: rgba(140, 200, 255, .85); animation-delay: 1.6s; }
+.atc-line.l3 path { stroke: rgba(255, 255, 255, .6); animation-delay: 3.2s; }
+@keyframes atc-draw {
+  0% { stroke-dashoffset: 240; opacity: 0; }
+  8% { opacity: 1; }
+  46% { stroke-dashoffset: 0; opacity: 1; }
+  78% { stroke-dashoffset: 0; opacity: .9; }
+  96% { stroke-dashoffset: -120; opacity: 0; }
+  100% { stroke-dashoffset: -240; opacity: 0; }
+}
+.atc-head { fill: rgba(232, 167, 47, .95); opacity: 0; animation: atc-pop 9s ease-in-out infinite; }
+.atc-head.h2 { fill: rgba(140, 200, 255, .9); animation-delay: 1.6s; }
+.atc-head.h3 { fill: rgba(255, 255, 255, .7); animation-delay: 3.2s; }
+@keyframes atc-pop { 0%, 40% { opacity: 0; } 50%, 74% { opacity: 1; } 90%, 100% { opacity: 0; } }
+.atc-dot {
+  fill: rgba(242, 244, 247, .92); transform-box: fill-box; transform-origin: center;
+  animation: atc-pulse 3.4s ease-in-out infinite;
+}
+.atc-dot.d2 { fill: rgba(232, 167, 47, .95); animation-delay: .5s; }
+.atc-dot.d3 { animation-delay: 1s; }
+.atc-dot.d4 { fill: rgba(140, 200, 255, .9); animation-delay: 1.5s; }
+@keyframes atc-pulse { 0%, 100% { transform: scale(.75); opacity: .5; } 50% { transform: scale(1.3); opacity: 1; } }
+.atc-zone ellipse {
+  fill: rgba(232, 167, 47, .05); stroke: rgba(232, 167, 47, .55); stroke-width: 1.2;
+  stroke-dasharray: 6 5; vector-effect: non-scaling-stroke;
+  animation: atc-march 7s linear infinite;
+}
+@keyframes atc-march { to { stroke-dashoffset: -88; } }
+
+/* ---------- меню входа: тёмное стекло поверх фото ---------- */
+.authwrap {
+  max-width: 440px; margin: 0 auto; min-height: 100vh; min-height: 100svh;
+  padding: max(18px, env(safe-area-inset-top)) 14px max(26px, env(safe-area-inset-bottom));
+  display: flex; flex-direction: column; justify-content: center; gap: 16px;
+}
+.authhead { display: flex; align-items: center; gap: 10px; padding-left: 2px; }
+.authmark {
+  display: inline-grid; place-items: center; height: 30px; padding: 0 9px; border-radius: 6px;
+  background: var(--accent); color: var(--accent-ink); font-size: 13px; font-weight: 900; letter-spacing: .04em;
+  box-shadow: 0 8px 24px rgba(232, 167, 47, .28);
+}
+.authhead-txt { display: flex; flex-direction: column; line-height: 1.15; }
+.authhead-txt b { font-size: 13px; font-weight: 900; letter-spacing: .18em; }
+.authhead-txt small { color: rgba(232, 237, 243, .68); font-size: 11px; }
+.authcard {
+  position: relative; padding: 22px 18px 18px; border-radius: 16px;
+  border: 1px solid rgba(255, 255, 255, .11);
+  background: rgba(7, 10, 15, .74);
+  -webkit-backdrop-filter: blur(26px) saturate(1.3) brightness(.82);
+  backdrop-filter: blur(26px) saturate(1.3) brightness(.82);
+  box-shadow: 0 30px 80px rgba(0, 0, 0, .6), inset 0 1px 0 rgba(255, 255, 255, .07);
+  animation: auth-in .5s cubic-bezier(.2, .8, .2, 1) both;
+}
+@keyframes auth-in { from { opacity: 0; transform: translate3d(0, 14px, 0) scale(.985); } to { opacity: 1; transform: none; } }
+.authcard h1 { font-size: 24px; letter-spacing: -.02em; }
+.authcard .sub { color: rgba(232, 237, 243, .74); }
+.authcard .field input, .authcard .field select {
+  background: rgba(3, 5, 8, .62); border-color: rgba(255, 255, 255, .16);
+}
+.authcard .field input:focus { background: rgba(3, 5, 8, .8); }
+.authcard .authtab { border-color: rgba(255, 255, 255, .14); color: rgba(232, 237, 243, .72); }
+.authcard .authtab.on { background: rgba(232, 167, 47, .16); border-color: rgba(232, 167, 47, .55); color: #ffd984; }
+.authcard .linklike { color: rgba(232, 237, 243, .66); }
+.authcard .linklike:hover { color: #fff; }
+.authquick { margin-top: 10px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.chip.mini { min-height: 26px; padding: 0 9px; font-size: 11px; border-radius: 20px; }
+.authfoot { display: flex; justify-content: center; gap: 10px; opacity: .9; }
+.authfoot .linklike { font-size: 11.5px; }
+.bgprev { margin: 2px 0 10px; border: 1px solid var(--border-2); border-radius: 10px; overflow: hidden; background: #05070a; }
+.bgprev img { display: block; width: 100%; height: 132px; object-fit: cover; }
+.field input[type="range"] { height: 30px; padding: 0; background: transparent; border: 0; accent-color: var(--accent); }
+.field input[type="range"]:focus { border: 0; }
+
+/* ---------- схема: панель инструментов ---------- */
+.boardwrap { position: relative; margin: 2px 12px 4px 26px; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; background: #020304; }
+/* Квадратный холст: тогда радар и SVG-разметка совпадают пиксель в пиксель. */
+.boardwrap .map-canvas { width: min(100%, 340px); max-width: none; max-height: none; aspect-ratio: 1; }
+.boardwrap.grid .map-canvas::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none; opacity: .5;
+  background-image:
+    linear-gradient(to right, rgba(255, 255, 255, .12) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, .12) 1px, transparent 1px);
+  background-size: 5% 5%;
+}
+.boardwrap:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+.boardbar { display: flex; flex-direction: column; align-items: stretch; gap: 5px; padding: 7px 8px 8px; border-top: 1px solid var(--border); background: #10151b; }
+.board-row { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+.board-tools { flex-wrap: nowrap; overflow-x: auto; padding-bottom: 1px; scrollbar-width: thin; }
+.board-tools::-webkit-scrollbar { height: 3px; }
+.board-tools::-webkit-scrollbar-thumb { background: var(--border-2); }
+.board-spacer { flex: 1 1 12px; }
+.board-hint { color: var(--dim); font-size: 11.5px; }
+.board-sub { padding-top: 0; }
+.board-sub.warn { color: #f0c060; font-size: 11.5px; }
+.bgroup {
+  display: inline-flex; align-items: center; gap: 4px; padding: 2px 4px;
+  border: 1px solid var(--border); border-radius: 7px; background: rgba(255, 255, 255, .02);
+}
+.toolbtn.tool {
+  display: flex; flex-direction: column; align-items: center; gap: 1px;
+  min-width: 52px; min-height: 40px; padding: 4px 6px;
+}
+.toolbtn.tool .ti { font-size: 15px; line-height: 1.1; }
+.toolbtn.tool .tl { font-size: 9.5px; font-weight: 700; opacity: .82; white-space: nowrap; }
+.toolbtn.tool.on { background: rgba(232, 167, 47, .13); }
+.toolbtn.sm[disabled] { opacity: .3; pointer-events: none; }
+.swatch { width: 21px; height: 21px; }
+
+/* ---------- схема: полноэкранный режим ---------- */
+.boardwrap.big {
+  position: fixed; inset: 0; z-index: 230; display: grid; place-items: center;
+  margin: 0; padding: 10px; border: 0; border-radius: 0; background: rgba(2, 3, 5, .96);
+}
+.boardwrap.big .board-inner { display: flex; flex-direction: column; width: min(100%, 96vh); max-height: 100%; }
+.boardwrap.big .map-canvas { width: min(100%, 72vh); max-width: none; max-height: none; }
+.boardwrap.big .boardbar { border: 1px solid var(--border); border-top: 0; border-radius: 0 0 var(--radius) var(--radius); max-height: 36vh; overflow-y: auto; }
+.board-close { position: absolute; top: max(10px, env(safe-area-inset-top)); right: 12px; z-index: 2; }
+body.board-full { overflow: hidden; }
+body.board-full .bottomnav { display: none; }
+
+/* ---------- схема: фигуры ---------- */
+.tactical-map { touch-action: pan-y; }
+body.captain .tactical-map.editing { touch-action: none; cursor: crosshair; }
+body.captain .tactical-map.editing .draw-item { cursor: grab; }
+.shape { fill: none; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.shape.hit { stroke: rgba(0, 0, 0, 0); stroke-width: 18px; pointer-events: stroke; }
+.shape.vis { pointer-events: none; }
+.shape.halo { display: none; stroke: #fff; stroke-width: 1.2px; stroke-dasharray: 3 2.4; pointer-events: none; opacity: .9; }
+.poly.shape { vector-effect: non-scaling-stroke; }
+.ahead { pointer-events: none; stroke: none; }
+.draw-item.selected .shape.halo { display: block; }
+.zone-vis { fill-opacity: .17; stroke-width: 1.5px; stroke-dasharray: 5 4; vector-effect: non-scaling-stroke; pointer-events: none; }
+.zone-hit { fill: rgba(0, 0, 0, 0); stroke: rgba(0, 0, 0, 0); stroke-width: 8px; vector-effect: non-scaling-stroke; pointer-events: all; cursor: grab; }
+.zone-item.selected .zone-halo { display: block; }
+.zone-halo { fill: none; stroke: #fff; stroke-width: 1.2px; stroke-dasharray: 3 2.4; vector-effect: non-scaling-stroke; pointer-events: none; display: none; }
+.chip-hit { fill: rgba(0, 0, 0, 0); stroke: none; pointer-events: all; }
+.bhandle {
+  fill: #fff; stroke: #080b0f; stroke-width: 1.5px; vector-effect: non-scaling-stroke;
+  pointer-events: all; cursor: grab;
+}
+.bhandle.bend { fill: var(--accent); }
+.nade-idx { font: 800 2.5px/1 ui-monospace, monospace; text-anchor: middle; paint-order: stroke; stroke: rgba(6, 8, 11, .9); stroke-width: .7px; }
+.player-sub { font: 800 2.4px/1 -apple-system, sans-serif; text-anchor: middle; paint-order: stroke; stroke: rgba(6, 8, 11, .92); stroke-width: .8px; }
+.preview-line {
+  fill: none; stroke-linecap: round; stroke-linejoin: round;
+  vector-effect: non-scaling-stroke; stroke-dasharray: 4 3; opacity: .9; pointer-events: none;
+}
+.tactical-map [data-marker], .tactical-map [data-draw] { -webkit-tap-highlight-color: transparent; }
+
+@media (max-width: 420px) {
+  .toolbtn.tool { min-width: 46px; }
+  .board-row.board-acts .toolbtn.sm { flex: 1 1 auto; }
+}
+@media (min-width: 900px) {
+  .authwrap { max-width: 460px; min-height: calc(100vh - 60px); }
+  .boardwrap { margin: 4px 16px 8px 16px; }
+  .boardwrap .map-canvas { width: min(100%, 460px); max-width: none; max-height: none; }
+  .boardwrap.big .map-canvas { width: min(100%, 76vh); max-height: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .authscene-img, .authscene-light, .authscene-grain, .atc-line path, .atc-dot, .atc-head, .atc-zone ellipse, .authcard { animation: none !important; }
+  .authscene-par { transition: none; }
 }
