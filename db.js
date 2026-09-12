@@ -412,7 +412,23 @@
       if (POS_TABLES.indexOf(table) >= 0) row.pos = await this.nextPos(table, teamId);
       res = await this.client.from(table).insert(row).select().single();
     }
-    if (res.error) rpcErr(res.error);
+    if (res.error) {
+      const msg = String((res.error && res.error.message) || "");
+      // Fallback для старых баз без столбца photo: пробуем без него
+      if (table === "maps" && msg.indexOf("photo") >= 0 && row.photo != null) {
+        try { console.warn("[playbook] maps.photo missing, retry without photo", msg); } catch (e) {}
+        delete row.photo;
+        let res2;
+        if (obj.id) res2 = await this.client.from(table).update(row).eq("id", obj.id).eq("team_id", teamId).select().single();
+        else res2 = await this.client.from(table).insert(row).select().single();
+        if (!res2.error) {
+          this.emit({ type: "data", table, origin: "local", id: res2.data.id });
+          return res2.data;
+        }
+        rpcErr(res2.error);
+      }
+      rpcErr(res.error);
+    }
     this.emit({ type: "data", table, origin: "local", id: res.data.id });
     return res.data;
   };

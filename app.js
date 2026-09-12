@@ -113,6 +113,7 @@
     ancient: "assets/maps/cards/ancient.jpg",
     dust2: "assets/maps/cards/dust2.jpg",
   };
+  const KABANY_HERO = "assets/kabany-hero.jpg";
   function mapSlug(name) {
     const s = String(name || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
     if (s.indexOf("mirage") >= 0) return "mirage";
@@ -120,7 +121,7 @@
     if (s.indexOf("dust") >= 0) return "dust2";
     return "";
   }
-  const mapArt = (m) => (m && (m.photo || MAP_ART[mapSlug(m.name)])) || "";
+  const mapArt = (m) => (m && (m.photo || MAP_ART[mapSlug(m.name)] || KABANY_HERO)) || KABANY_HERO;
   const mapRadar = (m) => (m && m.image) || "";
 
   /* ---------- зоны карты (для «где я стою») ---------- */
@@ -546,9 +547,9 @@
   function viewOverview() {
     const me = myPlayer();
     const cap = DB.team.captainName || "—";
-    let h = '<header class="page-head">' +
+    let h = '<header class="page-head with-art" style="--art:url(\'' + KABANY_HERO + '\')">' +
       "<div><h1>" + esc(DB.team.name) + "</h1>" +
-      '<p class="sub">Капитан: <b>' + esc(cap) + "</b>" + (me ? " · вы: <b>" + esc(me.name) + "</b>" : "") + "</p></div>" +
+      '<p class="sub">Капитан: <b>' + esc(cap) + "</b>" + (me ? " · вы: <b>" + esc(me.name) + "</b>" : "") + " · <span style='opacity:.85'>Реальные кабаны</span></p></div>" +
       (isCap() ? '<div class="head-actions"><button class="btn btn-primary" type="button" data-newtactic>' + ic("plus") + " Тактика</button></div>" : "") +
       "</header>";
 
@@ -587,8 +588,44 @@
     const maps = DB.cache.maps;
     h += '<section class="card"><div class="card-head"><h2>' + ic("map") + "Карты и тактики</h2>" +
       '<a class="card-link" href="#/tactics">Все тактики' + ic("chevron") + "</a></div><div class=\"card-body\">";
+    const totalTacs = DB.cache.tactics.length;
     if (!maps.length) {
-      h += emptyState("map", "Карт пока нет", isCap() ? "Добавьте первую карту в разделе «Тактики»." : "Капитан ещё не добавил карты.");
+      h += emptyState("map", "Карт пока нет", isCap() ? "Добавьте первую карту в разделе «Тактики»." : "Капитан ещё не добавил карты.",
+        isCap() ? '<button class="btn btn-primary btn-sm" type="button" data-addmap>' + ic("plus") + " Добавить карту</button>" +
+        ' <button class="btn btn-ghost btn-sm" type="button" data-starter>' + ic("target") + " Загрузить стартовый набор</button>" : "") +
+        (isCap() && totalTacs === 0 ? '<p class="hint" style="margin-top:10px">Стартовый набор: Mirage, Ancient, Dust 2 с дефолтами, составами и раскидками — загрузится одним нажатием.</p>' : "");
+    } else if (!totalTacs && isCap()) {
+      h += '<div class="empty">' + ic("target") + "<b>Карты есть, а тактик нет</b>" +
+        '<span>Капитан, загрузите стартовый набор — добавим дефолты и раскидки на Mirage, Ancient и Dust 2.</span>' +
+        '<button class="btn btn-primary btn-sm" type="button" data-starter>' + ic("plus") + " Загрузить стартовый набор</button></div>";
+      // продолжим отрисовкой карт ниже
+      h += '<div class="maplist">';
+      maps.forEach((m) => {
+        const list = DB.cache.tactics.filter((t) => t.map_id === m.id);
+        const tCount = list.filter((x) => x.side === "T").length;
+        const ctCount = list.filter((x) => x.side === "CT").length;
+        h += '<a class="maprow" href="#/tactics/' + attr(m.id) + '">' +
+          (mapArt(m) ? '<span class="maprow-img"><img src="' + attr(mapArt(m)) + '" alt="" loading="lazy"></span>'
+                     : '<span class="maprow-img noimg">' + ic("map") + "</span>") +
+          "<span class=\"maprow-main\"><b>" + esc(m.name) + "</b>" +
+          "<small>" + list.length + " такт. · T: " + tCount + " · CT: " + ctCount + "</small></span>" +
+          '<span class="row-arrow">' + ic("chevron") + "</span></a>";
+      });
+      h += "</div>";
+      view().innerHTML = h;
+      const nt2 = $("[data-newtactic]");
+      if (nt2) nt2.onclick = () => sheetNewTactic(null);
+      const pm2 = $("[data-pickme]");
+      if (pm2) pm2.onclick = openProfilePicker;
+      $$("[data-q]").forEach((b) => {
+        b.onclick = () => {
+          const q = b.dataset.q;
+          if (q === "tactic") sheetNewTactic(null);
+          else if (q === "player") sheetPlayer(null);
+        };
+      });
+      $$("[data-starter]").forEach((b) => { b.onclick = () => loadStarterKit(); });
+      return;
     } else {
       h += '<div class="maplist">';
       maps.forEach((m) => {
@@ -618,6 +655,7 @@
         else if (q === "player") sheetPlayer(null);
       };
     });
+    $$("[data-starter]").forEach((b) => { b.onclick = () => loadStarterKit(); });
   }
 
   /** Что делать игроку: задачи, гранаты и видео по всем тактикам. */
@@ -739,7 +777,15 @@
     if (!DB.cache.maps.length) {
       h += '<section class="card"><div class="card-body">' +
         emptyState("map", "Карт пока нет", isCap() ? "Добавьте карту — к ней привяжутся тактики и схемы." : "Капитан ещё не добавил карты.",
-          isCap() ? '<button class="btn btn-primary btn-sm" type="button" data-addmap>' + ic("plus") + " Добавить карту</button>" : "") +
+          isCap() ? '<button class="btn btn-primary btn-sm" type="button" data-addmap>' + ic("plus") + " Добавить карту</button>" +
+            ' <button class="btn btn-ghost btn-sm" type="button" data-starter>' + ic("target") + " Загрузить стартовый набор</button>" : "") +
+        (isCap() && !DB.cache.tactics.length ? '<p class="hint" style="margin-top:10px">Стартовый набор: Mirage, Ancient, Dust 2 с дефолтами, составами и раскидками.</p>' : "") +
+        "</div></section>";
+    } else if (!DB.cache.tactics.length && isCap()) {
+      h += '<section class="card"><div class="card-body">' +
+        emptyState("target", "Тактик пока нет", "Карты есть — загрузите стартовый набор или создайте первую тактику.",
+          '<button class="btn btn-primary btn-sm" type="button" data-newt>' + ic("plus") + " Создать тактику</button>" +
+          ' <button class="btn btn-ghost btn-sm" type="button" data-starter>' + ic("target") + " Загрузить стартовый набор</button>") +
         "</div></section>";
     } else {
       h += '<div class="mapgrid">';
@@ -758,6 +804,7 @@
     view().innerHTML = h;
     $$("[data-newt]").forEach((b) => { b.onclick = () => sheetNewTactic(null); });
     $$("[data-addmap]").forEach((b) => { b.onclick = () => sheetMap(null); });
+    $$("[data-starter]").forEach((b) => { b.onclick = () => loadStarterKit(); });
     $$("[data-mapmenu]").forEach((b) => {
       b.onclick = (e) => { e.preventDefault(); e.stopPropagation(); mapMenu(e.currentTarget, mapById(b.dataset.mapmenu)); };
     });
@@ -860,7 +907,8 @@
 
     let h = '<div class="tac">';
     /* --- шапка тактики --- */
-    h += '<header class="tac-head">' +
+    const tacticArt = m ? (mapArt(m) || mapRadar(m) || KABANY_HERO) : "";
+    h += '<header class="tac-head' + (tacticArt ? " with-art" : "") + '"' + (tacticArt ? ' style="--art:url(\'' + attr(tacticArt).replace(/'/g, "%27") + '\')"' : "") + ">" +
       '<a class="backlink" href="' + (m ? "#/tactics/" + attr(m.id) : "#/tactics") + '">' + ic("back") + esc(m ? m.name : "Тактики") + "</a>" +
       '<div class="tac-title"><h1>' + esc(t.name) + "</h1>" +
       '<span class="tac-badges">' +
@@ -869,6 +917,7 @@
       (m ? '<span class="badge ghost">' + esc(m.name) + "</span>" : "") +
       "</span></div>" +
       '<div class="tac-head-actions">' +
+      (m && (m.photo || m.image || mapArt(m)) ? '<button class="btn btn-ghost btn-sm" type="button" data-openart title="Открыть картинку карты">' + ic("image") + " Картинка</button>" : "") +
       '<button class="btn btn-ghost btn-sm" type="button" data-details>' + ic("layers") + " Детали</button>" +
       (isCap() ? '<button class="btn btn-icon" type="button" data-tmenu title="Действия с тактикой">' + ic("dots") + "</button>" : "") +
       "</div></header>";
@@ -896,6 +945,11 @@
     });
     const det = $("[data-details]");
     if (det) det.onclick = () => openTacticDetails(t);
+    const oa = $("[data-openart]");
+    if (oa) oa.onclick = () => {
+      const art = (m && (m.photo || m.image)) ? (m.photo || m.image) : (m ? mapArt(m) : "") || KABANY_HERO;
+      if (art) openViewer(art, m ? m.name : "Карта");
+    };
     const tm = $("[data-tmenu]");
     if (tm) tm.onclick = (e) => { e.stopPropagation(); tacticMenu(e.currentTarget, t); };
     bindPlayerChips(t);
@@ -959,7 +1013,7 @@
       block,
       editable: isCap(),
       players: DB.cache.players,
-      bg: block.bg || mapRadar(mapById(t.map_id)),
+      bg: block.bg || mapRadar(mapById(t.map_id)) || mapArt(mapById(t.map_id)) || KABANY_HERO,
       side: t.side,
       ic,
       glyphPath: (name) => UI.ICON[name] || "",
@@ -1767,6 +1821,7 @@
     if (!isCap()) return;
     const isNew = !m;
     m = m || { name: "", image: "", photo: "" };
+    if (!m.photo && isNew) m.photo = KABANY_HERO;
     const presets = [["", "Без радара"]].concat(
       DB.cache.maps.filter((x) => x.image).map((x) => [x.image, x.name + " (текущий радар)"])).concat([
       ["assets/maps/mirage.png", "Mirage (встроенный радар)"],
@@ -1779,26 +1834,30 @@
         '<option value="' + attr(p[0]) + '"' + (m.image === p[0] ? " selected" : "") + ">" + esc(p[1]) + "</option>").join("") +
         '<option value="__custom">Своя ссылка…</option></select>') +
       '<div id="mpCustomWrap" hidden>' + field("Ссылка на изображение", '<input id="mpCustom" maxlength="600" value="' + attr(m.image || "") + '" placeholder="https://…">') + "</div>" +
-      field("Обложка (фото карточки)", '<div class="vpreview" id="mpPrev">' +
-        '<img src="' + attr(m.photo || mapArt(m) || "assets/maps/mirage.png") + '" alt=""></div>' +
+      field("Обложка (фото карточки) — можно открыть кликом", '<div class="vpreview" id="mpPrev" style="cursor:pointer" title="Нажмите чтобы открыть картинку">' +
+        '<img src="' + attr(m.photo || mapArt(m) || KABANY_HERO) + '" alt=""></div>' +
         '<button class="btn btn-ghost btn-sm" type="button" data-mppick>' + ic("upload") + " Загрузить фото</button>" +
+        '<span style="margin-left:8px" class="hint">Фото по умолчанию — "Реальные кабаны"</span>' +
         '<input type="file" accept="image/*" hidden id="mpFile">') +
-      '<p class="form-error" id="mpErr" role="alert"></p>',
+      '<p class="form-error" id="mpErr" role="alert"></p>' +
+      '<p class="hint">Обложка видна без открытия — на карточке карты. Радар — фон схемы.</p>',
       '<button class="btn btn-ghost" type="button" data-x>Отмена</button>' +
       (isNew ? "" : '<button class="btn btn-danger" type="button" data-del>Удалить карту</button>') +
       '<button class="btn btn-primary" type="button" data-ok>Сохранить</button>');
-    let photo = m.photo || "";
+    let photo = m.photo || (isNew ? KABANY_HERO : "");
     const sel = $("#mpImage");
     const syncCustom = () => { $("#mpCustomWrap").hidden = sel.value !== "__custom"; };
     sel.onchange = syncCustom;
     syncCustom();
     if (m.image && !presets.some((p) => p[0] === m.image)) { sel.value = "__custom"; syncCustom(); }
+    $("#mpPrev").onclick = () => { const src = $("#mpPrev img") && $("#mpPrev img").src; if (src) openViewer(src, $("#mpName").value.trim() || m.name || "Карта"); };
     $("#mpFile").onchange = (e) => {
       const file = e.target.files && e.target.files[0];
       if (!file) return;
       readImage(file, 900).then((url) => {
         photo = url;
         $("#mpPrev").innerHTML = '<img src="' + attr(url) + '" alt="">';
+        $("#mpPrev").onclick = () => openViewer(url, $("#mpName").value.trim() || m.name || "Карта");
       }).catch(() => toast(UI.friendlyError(null, "Не удалось прочитать файл"), "err"));
     };
     $("[data-mppick]").onclick = () => $("#mpFile").click();
@@ -1809,12 +1868,40 @@
       const name = $("#mpName").value.trim();
       if (!name) { $("#mpErr").textContent = "Введите название карты"; return; }
       const image = sel.value === "__custom" ? $("#mpCustom").value.trim() : sel.value;
+      if (!photo) photo = KABANY_HERO;
       const payload = { name, image, photo };
       if (!isNew) payload.id = m.id;
-      const saved = await commit(isNew ? 'добавил карту «' + name + "»" : 'изменил карту «' + name + "»",
-        isNew ? null : { kind: "map", id: m.id }, () => DB.save("maps", payload));
-      if (saved !== null) { closeSheet(); toast("Сохранено", "ok"); if (isNew) go("#/tactics/" + saved.id); }
+      let saved = null;
+      try { saved = await commit(isNew ? 'добавил карту «' + name + "»" : 'изменил карту «' + name + "»", isNew ? null : { kind: "map", id: m.id }, () => DB.save("maps", payload)); }
+      catch (e) {
+        // Fallback для старых баз без столбца photo: пробуем без photo
+        const msg = String((e && e.message) || e);
+        if (msg.indexOf("photo") >= 0) {
+          try { const p2 = { name, image }; if (!isNew) p2.id = m.id; saved = await commit(isNew ? 'добавил карту «' + name + "»" : 'изменил карту «' + name + "»", isNew ? null : { kind: "map", id: m.id }, () => DB.save("maps", p2)); toast("Сохранено без обложки (обновите схему: supabase-schema.sql)", "warn"); } catch (e2) { toast(UI.friendlyError(e2, "Не удалось сохранить"), "err"); return; }
+        } else throw e;
+      }
+      if (saved !== null) {
+        closeSheet(); toast("Сохранено", "ok");
+        // Обновляем отображение без необходимости открывать карту: перерисовываем главную и тактики
+        try { await DB.refresh("maps"); } catch (ignore) {}
+        render();
+        if (isNew) go("#/tactics/" + saved.id);
+      }
     };
+  }
+  async function loadStarterKit() {
+    if (!isCap()) { toast("Это может сделать только капитан", "warn"); return; }
+    const need = DB.cache.maps.length === 0 || DB.cache.tactics.length === 0;
+    if (!need) { toast("Стартовый набор уже загружен", "ok"); return; }
+    if (!confirm("Загрузить стартовый набор? Добавим карты Mirage, Ancient, Dust 2 с тактиками, составом и раскидками. Текущие данные не удалятся.")) return;
+    saveState("saving");
+    try {
+      await Seed.seedTeam(DB.team.id);
+      await DB.refresh("*");
+      saveState("saved");
+      toast("Стартовый набор загружен", "ok");
+      render();
+    } catch (e) { saveState(""); toast(UI.friendlyError(e, "Не удалось загрузить набор"), "err"); }
   }
   function deleteMap(m) {
     const n = DB.cache.tactics.filter((t) => t.map_id === m.id).length;

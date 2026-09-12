@@ -48,10 +48,17 @@ create table if not exists maps (
   team_id uuid not null references teams(id) on delete cascade,
   name text not null,
   image text not null default '',
+  photo text not null default '',
   pos int not null default 0,
   updated_at timestamptz not null default now()
 );
 create index if not exists maps_team_idx on maps (team_id, pos);
+-- Миграция для баз, созданных до появления photo (обложка карточки).
+do $$ begin
+  if not exists (select 1 from information_schema.columns where table_schema='public' and table_name='maps' and column_name='photo') then
+    alter table public.maps add column photo text not null default '';
+  end if;
+end $$;
 
 create table if not exists tactics (
   id uuid primary key default gen_random_uuid(),

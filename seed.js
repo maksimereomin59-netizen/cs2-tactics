@@ -31,40 +31,73 @@
     const BASE = (typeof window !== "undefined" ? window.TACTICS_BASE : null) || global.TACTICS_BASE;
     if (!DB || !BASE) throw new Error("NO_SEED_SOURCE");
 
-    // ---------- игроки ----------
+    // ---------- игроки (идемпотентно: не дублируем если уже 5 игроков есть) ----------
+    const existingPlayers = await DB.adapter.list("players", teamId).catch(() => []);
+    const existingMaps = await DB.adapter.list("maps", teamId).catch(() => []);
+    const existingMapsByName = {};
+    existingMaps.forEach((m) => { existingMapsByName[String(m.name).toLowerCase()] = m; });
     const playerIdMap = {};
-    for (const p of BASE.players) {
-      const positions = [];
-      Object.keys(BASE.maps).forEach((mapId) => {
-        const map = BASE.maps[mapId];
-        ["T", "CT"].forEach((side) => {
-          (map.sides[side].defaults || []).forEach((d) => {
-            if (d.player === p.id) {
-              const zn = zoneName(map, d.zone);
-              if (zn && positions.indexOf(zn) < 0 && positions.length < 5) positions.push(zn);
-            }
+    // Если в команде уже есть игроки — используем их, не создаём дубликаты
+    if (existingPlayers.length >= 5) {
+      // Сопоставляем по порядку (первый игрок базы -> первый игрок команды и т.д.)
+      BASE.players.forEach((p, i) => {
+        const found = existingPlayers[i];
+        if (found) playerIdMap[p.id] = found.id;
+      });
+    } else {
+      for (const p of BASE.players) {
+        const positions = [];
+        Object.keys(BASE.maps).forEach((mapId) => {
+          const map = BASE.maps[mapId];
+          ["T", "CT"].forEach((side) => {
+            (map.sides[side].defaults || []).forEach((d) => {
+              if (d.player === p.id) {
+                const zn = zoneName(map, d.zone);
+                if (zn && positions.indexOf(zn) < 0 && positions.length < 5) positions.push(zn);
+              }
+            });
           });
         });
-      });
-      const row = await DB.adapter.save("players", teamId, {
-        name: p.nick, role: p.role || "", positions,
-        color: p.color || "#f0b429",
-        notes: (p.tips || []).join("\n"),
-      });
-      playerIdMap[p.id] = row.id;
+        const row = await DB.adapter.save("players", teamId, {
+          name: p.nick, role: p.role || "", positions,
+          color: p.color || "#f0b429",
+          notes: (p.tips || []).join("\n"),
+        });
+        playerIdMap[p.id] = row.id;
+      }
+      // Перечитаем игроков если создавали
+      if (!existingPlayers.length) {
+        const fresh = await DB.adapter.list("players", teamId).catch(() => []);
+        // Если создавали частично — дополним мапу для недостающих
+        fresh.forEach((fp, idx) => {
+          // уже заполнено выше
+        });
+      }
     }
 
     // ---------- карты ----------
     const mapIdMap = {};
+    const defaultPhoto = "assets/kabany-hero.jpg";
     for (const mapId of Object.keys(BASE.maps)) {
       const map = BASE.maps[mapId];
-      const row = await DB.adapter.save("maps", teamId, { name: map.name, image: map.image });
+      const low = String(map.name).toLowerCase();
+      if (existingMapsByName[low]) { mapIdMap[mapId] = existingMapsByName[low].id; continue; }
+      let row;
+      try { row = await DB.adapter.save("maps", teamId, { name: map.name, image: map.image, photo: defaultPhoto }); }
+      catch (e) {
+        const msg = String((e && e.message) || e);
+        if (msg.indexOf("photo") >= 0) row = await DB.adapter.save("maps", teamId, { name: map.name, image: map.image });
+        else throw e;
+      }
       mapIdMap[mapId] = row.id;
     }
 
-    // ---------- тактики: дефолт + раскидки на каждую сторону ----------
+    // ---------- тактики: дефолт + раскидки на каждую сторону (идемпотентно) ----------
+    const existingTactics = await DB.adapter.list("tactics", teamId).catch(() => []);
+    const hasTactic = (mid, name) => existingTactics.some((t) => String(t.map_id) === String(mid) && String(t.name) === name);
     for (const mapId of Object.keys(BASE.maps)) {
       const map = BASE.maps[mapId];
+      const mid = mapIdMap[mapId];
       for (const side of ["T", "CT"]) {
         const sideData = map.sides[side];
         const defaults = sideData.defaults || [];
@@ -110,8 +143,8 @@
         // Видео: блок есть сразу, ссылки добавляет капитан
         blocks.push({ id: uid("b"), type: "video", title: "Видео", items: [] });
 
-        await DB.adapter.save("tactics", teamId, {
-          map_id: mapIdMap[mapId],
+        if (!hasTactic(mid, side === "T" ? "Дефолт T" : "Дефолт CT")) await DB.adapter.save("tactics", teamId, {
+          map_id: mid,
           name: side === "T" ? "Дефолт T" : "Дефолт CT",
           side, category: "Default",
           description: (sideData.plan || []).join("\n"),
@@ -145,8 +178,8 @@
               });
             }
           });
-          await DB.adapter.save("tactics", teamId, {
-            map_id: mapIdMap[mapId],
+          if (!hasTactic(mid, side === "T" ? "Раскидки T" : "Раскидки CT")) await DB.adapter.save("tactics", teamId, {
+            map_id: mid,
             name: side === "T" ? "Раскидки T" : "Раскидки CT",
             side, category: "Utility",
             description: "",
