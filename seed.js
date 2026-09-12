@@ -9,9 +9,21 @@
   function uid(prefix) {
     return (prefix || "x") + Math.random().toString(36).slice(2, 10);
   }
+  function zoneById(map, zoneId) {
+    return (map.zones || []).filter((z) => z.id === zoneId)[0] || null;
+  }
   function zoneName(map, zoneId) {
-    const z = (map.zones || []).find((x) => x.id === zoneId);
+    const z = zoneById(map, zoneId);
     return z ? z.name : "";
+  }
+  /** Цвет гранаты на схеме — совпадает с палитрой доски. */
+  const NADE_COLOR = { smoke: "#9fb0c0", molly: "#ff7a59", flash: "#ffd166", he: "#c3ced9", bomb: "#f0b429" };
+  /** Точки одного происхождения чуть разносим, чтобы гранаты не слипались в одну. */
+  function scatter(index) {
+    const ring = Math.floor(index / 4);
+    if (!ring) return { dx: 0, dy: 0 };
+    const a = ((index % 4) / 4) * Math.PI * 2 + ring * 0.6;
+    return { dx: Math.cos(a) * 3.4 * ring, dy: Math.sin(a) * 3.4 * ring };
   }
 
   async function seedTeam(teamId) {
@@ -36,7 +48,7 @@
       });
       const row = await DB.adapter.save("players", teamId, {
         name: p.nick, role: p.role || "", positions,
-        color: p.color || "#e8a72f",
+        color: p.color || "#f0b429",
         notes: (p.tips || []).join("\n"),
       });
       playerIdMap[p.id] = row.id;
@@ -50,65 +62,117 @@
       mapIdMap[mapId] = row.id;
     }
 
-    // ---------- тактики: Default + Раскидка на каждую сторону ----------
+    // ---------- тактики: дефолт + раскидки на каждую сторону ----------
     for (const mapId of Object.keys(BASE.maps)) {
       const map = BASE.maps[mapId];
       for (const side of ["T", "CT"]) {
         const sideData = map.sides[side];
+        const defaults = sideData.defaults || [];
         const blocks = [];
-        // Состав
+
+        // Состав: где каждый игрок начинает раунд
         blocks.push({
           id: uid("b"), type: "roster", title: "Состав",
-          items: (sideData.defaults || []).map((d) => ({
+          items: defaults.map((d) => ({
             id: uid("i"), playerId: playerIdMap[d.player] || null, note: zoneName(map, d.zone),
           })),
         });
-        // Задачи = точки игроков
+
+        // Задачи игроков + что это за точка (описание зоны из базовой карты)
         blocks.push({
           id: uid("b"), type: "tasks", title: "Задачи",
-          items: (sideData.defaults || []).map((d) => ({
-            id: uid("i"), playerId: playerIdMap[d.player] || null, role: "", task: d.note || "", note: "",
-          })),
+          items: defaults.map((d) => {
+            const z = zoneById(map, d.zone);
+            return {
+              id: uid("i"), playerId: playerIdMap[d.player] || null, role: "",
+              task: d.note || "", note: (z && z.desc) || "",
+            };
+          }),
         });
-        // Схема: маркеры из стартовых позиций
+
+        // Схема: стартовые позиции (комментарий капитана = note маркера)
         blocks.push({
           id: uid("b"), type: "board", title: "Схема",
-          markers: (sideData.defaults || []).map((d) => {
-            const z = (map.zones || []).find((x) => x.id === d.zone) || { x: 50, y: 50 };
-            return { id: uid("m"), kind: "player", playerId: playerIdMap[d.player] || null, label: "", color: "", x: z.x + (d.dx || 0), y: z.y + (d.dy || 0), note: d.note || "" };
+          markers: defaults.map((d) => {
+            const z = zoneById(map, d.zone) || { x: 50, y: 50 };
+            // note — короткая подпись на схеме; длинный текст задачи живёт в блоке «Задачи»
+            return {
+              id: uid("m"), kind: "player", playerId: playerIdMap[d.player] || null,
+              label: "", color: "", x: z.x + (d.dx || 0), y: z.y + (d.dy || 0),
+              note: "",
+            };
           }),
           drawings: (sideData.drawings || []).map((dr) => Object.assign({ id: uid("d") }, dr)),
           markerStyle: sideData.markerStyle || "number",
+          view: null,
         });
+
+        // Видео: блок есть сразу, ссылки добавляет капитан
+        blocks.push({ id: uid("b"), type: "video", title: "Видео", items: [] });
+
         await DB.adapter.save("tactics", teamId, {
           map_id: mapIdMap[mapId],
-          name: side === "T" ? "Default T" : "Default CT",
+          name: side === "T" ? "Дефолт T" : "Дефолт CT",
           side, category: "Default",
           description: (sideData.plan || []).join("\n"),
           blocks,
         });
-        // Раскидки стороны
-        if ((sideData.nades || []).length) {
+
+        // Раскидки стороны: список гранат + схема бросков
+        const nades = sideData.nades || [];
+        if (nades.length) {
+          const usedFrom = {};
+          const nadeMarkers = [];
+          const nadeDrawings = [];
+          nades.forEach((n) => {
+            const from = zoneById(map, n.from);
+            const to = zoneById(map, n.to);
+            if (!from) return;
+            const idx = usedFrom[from.id] = (usedFrom[from.id] || 0);
+            usedFrom[from.id] += 1;
+            const off = scatter(idx);
+            const x = from.x + off.dx + (n.dx || 0);
+            const y = from.y + off.dy + (n.dy || 0);
+            const color = NADE_COLOR[n.type] || NADE_COLOR.bomb;
+            nadeMarkers.push({
+              id: uid("m"), kind: n.type || "smoke", playerId: playerIdMap[n.by] || null,
+              label: "", color, x, y, note: "",
+            });
+            if (to) {
+              nadeDrawings.push({
+                id: uid("d"), type: "arrow", playerId: playerIdMap[n.by] || null,
+                x1: x, y1: y, x2: to.x, y2: to.y, color, w: 2, dash: true, label: "",
+              });
+            }
+          });
           await DB.adapter.save("tactics", teamId, {
             map_id: mapIdMap[mapId],
             name: side === "T" ? "Раскидки T" : "Раскидки CT",
             side, category: "Utility",
             description: "",
-            blocks: [{
-              id: uid("b"), type: "grenades", title: "Гранаты",
-              items: (sideData.nades || []).map((n) => ({
-                id: uid("i"), kind: n.type, name: n.name,
-                by: playerIdMap[n.by] || null,
-                from: zoneName(map, n.from), to: zoneName(map, n.to),
-                steps: (n.steps || []).slice(), note: n.note || "",
-              })),
-            }],
+            blocks: [
+              {
+                id: uid("b"), type: "grenades", title: "Гранаты",
+                items: nades.map((n) => ({
+                  id: uid("i"), kind: n.type, name: n.name,
+                  by: playerIdMap[n.by] || null,
+                  from: zoneName(map, n.from), to: zoneName(map, n.to),
+                  steps: (n.steps || []).slice(), note: n.note || "",
+                })),
+              },
+              {
+                id: uid("b"), type: "board", title: "Схема",
+                markers: nadeMarkers, drawings: nadeDrawings,
+                markerStyle: sideData.markerStyle || "number", view: null,
+              },
+              { id: uid("b"), type: "video", title: "Видео", items: [] },
+            ],
           });
         }
       }
     }
 
-    // ---------- материал: экономика ----------
+    // ---------- материалы: экономика ----------
     if ((BASE.eco || []).length) {
       await DB.adapter.save("materials", teamId, {
         map_id: null, type: "note", title: "Экономика команды", url: "",
@@ -123,7 +187,8 @@
         { id: uid("b"), type: "roster", title: "Состав", items: [] },
         { id: uid("b"), type: "tasks", title: "Задачи", items: [] },
         { id: uid("b"), type: "grenades", title: "Гранаты", items: [] },
-        { id: uid("b"), type: "board", title: "Схема", markers: [], drawings: [], markerStyle: "number" },
+        { id: uid("b"), type: "board", title: "Схема", markers: [], drawings: [], markerStyle: "number", view: null },
+        { id: uid("b"), type: "video", title: "Видео", items: [] },
         { id: uid("b"), type: "note", title: "Заметки", items: [] },
       ],
     });

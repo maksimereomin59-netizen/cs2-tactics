@@ -294,6 +294,13 @@ $$
 begin
   if not is_captain(p_team_id) then raise exception 'DENIED'; end if;
   if length(p_new) < 4 then raise exception 'BAD_INPUT'; end if;
+  -- Одинаковый PIN команды и капитана позволял бы любому игроку повысить себя.
+  if p_kind = 'captain' and (select pin_hash = crypt(p_new, pin_hash) from teams where id = p_team_id) then
+    raise exception 'SAME_PIN';
+  end if;
+  if p_kind = 'team' and (select captain_pin_hash = crypt(p_new, captain_pin_hash) from teams where id = p_team_id) then
+    raise exception 'SAME_PIN';
+  end if;
   perform set_config('app.allow_pin_change', '1', true);
   if p_kind = 'team' then
     update teams set pin_hash = crypt(p_new, gen_salt('bf')) where id = p_team_id;

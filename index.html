@@ -3,75 +3,73 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#0e1116">
+  <meta name="theme-color" content="#0b0e13">
+  <meta name="description" content="CS2 Team Playbook — тактики, схемы, раскидки и видео команды.">
   <title>CS2 Team Playbook</title>
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="assets/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="assets/icon.svg">
-  <link rel="stylesheet" href="styles.css?v=10">
+  <link rel="stylesheet" href="styles.css?v=12">
+  <script>
+    /* Старая версия ставила service worker, который кэшировал файлы. Его больше нет,
+       но установленный он продолжил бы отдавать старую вёрстку — снимаем регистрацию
+       и чистим кэш. На данных команды это не сказывается: они в localStorage/Supabase. */
+    (function () {
+      try {
+        if ("serviceWorker" in navigator && navigator.serviceWorker.getRegistrations) {
+          navigator.serviceWorker.getRegistrations().then(function (rs) {
+            rs.forEach(function (r) { r.unregister(); });
+          })["catch"](function () {});
+        }
+        if (window.caches && window.caches.keys) {
+          window.caches.keys().then(function (ks) {
+            ks.forEach(function (k) { window.caches["delete"](k); });
+          })["catch"](function () {});
+        }
+      } catch (e) { /* браузер без поддержки SW — ничего делать не нужно */ }
+    })();
+  </script>
 </head>
 <body>
-  <!-- Живой фон экрана входа: фото команды + анимированная разметка тактики. -->
-  <div class="authscene" id="authScene" aria-hidden="true">
-    <div class="authscene-par" id="authScenePar">
-      <div class="authscene-pre" id="authScenePre"></div>
-      <div class="authscene-img" id="authSceneImg"></div>
-      <svg class="authscene-tactic" viewBox="0 0 100 100" preserveAspectRatio="none">
-        <g class="atc-line l1"><path d="M12 84 C 28 78, 34 62, 50 56" /></g>
-        <g class="atc-line l2"><path d="M88 74 C 74 68, 70 52, 56 44" /></g>
-        <g class="atc-line l3"><path d="M50 56 C 55 46, 62 42, 70 30" /></g>
-        <g class="atc-zone"><ellipse cx="72" cy="26" rx="15" ry="10" /></g>
-        <circle class="atc-dot d1" cx="12" cy="84" r="2.1" />
-        <circle class="atc-dot d2" cx="50" cy="56" r="2.1" />
-        <circle class="atc-dot d3" cx="88" cy="74" r="2.1" />
-        <circle class="atc-dot d4" cx="70" cy="30" r="2.1" />
-        <path class="atc-head h1" d="M50 56 l-5.8 -1.1 3.1 4.5 z" />
-        <path class="atc-head h2" d="M56 44 l-5.4 -2.4 2.4 5 z" />
-        <path class="atc-head h3" d="M70 30 l-5.9 .2 3.6 4 z" />
-      </svg>
-    </div>
-    <div class="authscene-light"></div>
-    <div class="authscene-grain"></div>
-    <div class="authscene-scrim"></div>
-  </div>
+  <a class="skiplink" href="#view">К содержимому</a>
 
-  <!-- Размытый фон команды на всех рабочих страницах (фото из «Фото на входе»). -->
-  <div class="appbg" id="appBg" aria-hidden="true"></div>
-
-  <header class="top" id="topbar" hidden>
-    <a class="brand" href="#/overview">
-      <span class="brand-logo" aria-hidden="true"><img src="assets/icon.svg" alt=""></span>
-      <span class="brand-team" id="brandTeam">—</span>
+  <header class="topbar" id="topbar" hidden>
+    <a class="brand" href="#/overview" title="Обзор">
+      <span class="brand-mark">CS2</span>
+      <span class="brand-name" id="brandTeam">—</span>
     </a>
-    <div class="top-status">
+    <div class="topbar-right">
       <span class="savestate" id="saveState" hidden></span>
       <span class="netdot" id="netDot" title="Соединение"></span>
-      <button class="iconbtn" id="searchBtn" type="button" title="Поиск"></button>
+      <button class="btn btn-icon" id="searchBtn" type="button" title="Поиск" aria-label="Поиск"></button>
       <span class="rolebadge" id="roleBadge">Игрок</span>
+      <button class="whoami topbar-who" id="topProfile" type="button" title="Профиль"></button>
     </div>
   </header>
 
   <div class="layout">
-    <aside class="side" id="sidebar" hidden>
-      <nav class="sidenav" id="sideNav"></nav>
+    <aside class="sidebar" id="sidebar" hidden>
+      <nav class="nav" id="sideNav" aria-label="Разделы"></nav>
       <div class="side-foot" id="sideFoot"></div>
     </aside>
     <main class="view" id="view">
-      <div class="loading"><span class="loading-dot"></span>Загрузка…</div>
+      <div class="loading" role="status"><span class="spinner"></span>Загрузка…</div>
     </main>
   </div>
 
-  <nav class="bottomnav" id="bottomNav" hidden></nav>
+  <nav class="bottomnav" id="bottomNav" hidden aria-label="Разделы"></nav>
 
   <div class="sheet-root" id="sheetRoot" hidden></div>
   <div class="modal-root" id="modalRoot" hidden></div>
   <div class="viewer-root" id="viewerRoot" hidden></div>
-  <div class="toast-root" id="toastRoot"></div>
+  <div class="toast-root" id="toastRoot" aria-live="polite"></div>
 
   <script src="supabase-config.js"></script>
-  <script src="data.js?v=10"></script>
-  <script src="db.js?v=10"></script>
-  <script src="seed.js?v=10"></script>
-  <script src="app.js?v=10"></script>
+  <script src="data.js?v=12"></script>
+  <script src="db.js?v=12"></script>
+  <script src="ui.js?v=12"></script>
+  <script src="board.js?v=12"></script>
+  <script src="seed.js?v=12"></script>
+  <script src="app.js?v=12"></script>
 </body>
 </html>
