@@ -10,7 +10,7 @@
     "all": "node test.mjs && node test-client.mjs && node test-ui.mjs"
   },
   "devDependencies": {
-    "@electric-sql/pglite": "^0.3.18",
+    "@electric-sql/pglite": "^0.3.16",
     "jsdom": "^27.0.0"
   }
 }
